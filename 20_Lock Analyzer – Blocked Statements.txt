@@ -1,0 +1,413 @@
+WITH BASIS_INFO AS
+( SELECT /*+ MATERIALIZE */
+    DECODE(DBID, -1, OWN_DBID, DBID) DBID,
+    DECODE(INSTANCE_NUMBER, -1, USERENV('INSTANCE'), INSTANCE_NUMBER) INSTANCE_NUMBER,
+    BEGIN_DATE,
+    END_DATE,
+    TO_TIMESTAMP(TO_CHAR(BEGIN_DATE, 'dd.mm.yyyy hh24:mi:ss'),
+      'dd.mm.yyyy hh24:mi:ss') BEGIN_TIME,
+    TO_TIMESTAMP(TO_CHAR(END_DATE, 'dd.mm.yyyy hh24:mi:ss'),
+      'dd.mm.yyyy hh24:mi:ss') END_TIME,
+    BEGIN_SNAP_ID,
+    END_SNAP_ID,
+    ROOT_BLOCKER_SQL_ID,
+    ROOT_BLOCKER_EVENT,
+    waiter_sql_id,
+    waiter_event,
+    DATA_SOURCE,
+    GROUP_BY_SAMPLE_TIME,
+    GROUP_BY_ROOT_BLOCKER,
+    GROUP_BY_WAITER,
+    min_pct,
+    min_samples
+  FROM
+  ( SELECT
+      -1 DBID,
+      -2 INSTANCE_NUMBER,
+      TO_DATE('<FROM YYYY-MM-DD HH24:MI>','YYYY-MM-DD HH24:MI') BEGIN_DATE,                                                                     /********** EDIT HERE 1/2; example: 2021-09-31 09:49 ******************/
+      TO_DATE('<TO YYYY-MM-DD HH24:MI>','YYYY-MM-DD HH24:MI') END_DATE,                                                                         /********** EDIT HERE 1/2; example: 2021-09-31 09:49 ******************/
+      -1 BEGIN_SNAP_ID,
+        /* explicit SNAP_IDs sometimes required for ASH partition pruning */
+      -1 END_SNAP_ID,
+      '%' ROOT_BLOCKER_SQL_ID,
+      '%' ROOT_BLOCKER_EVENT,
+      '%' WAITER_SQL_ID,
+      '%' WAITER_EVENT,
+      'AWR' DATA_SOURCE,
+        /* AWR, CURRENT */
+      ' ' GROUP_BY_SAMPLE_TIME,
+        /* all time format strings like yyyy-mm-dd hh24:mi:ss; empty=full aggregation */
+      ' ' GROUP_BY_ROOT_BLOCKER,
+        /* inst_id, session_id, action, sql_id, program (any mixture of); empty=all; blank=none*/
+      'action, sql_id' GROUP_BY_WAITER,
+        /* action, sql_id, row_wait_obj#, row_id_statement, enq_type, enq_request (any mixture of); empty=all; blank=none */
+      1 min_pct,
+      6 min_samples
+    FROM
+      DUAL
+  ),
+  ( SELECT DBID OWN_DBID FROM V$DATABASE )
+),
+SNAPSHOTS AS
+( SELECT
+    HSS.DBID,
+    HSS.INSTANCE_NUMBER,
+    MIN(HSS.SNAP_ID) BEGIN_SNAP_ID,
+    MIN(HSS.BEGIN_INTERVAL_TIME) BEGIN_TIME,
+    MAX(HSS.SNAP_ID) END_SNAP_ID,
+    MAX(HSS.END_INTERVAL_TIME) END_TIME
+  FROM
+    DBA_HIST_SNAPSHOT HSS,
+    BASIS_INFO BI
+  WHERE
+    HSS.DBID = BI.DBID AND
+    HSS.END_INTERVAL_TIME >= BI.BEGIN_TIME AND
+    HSS.BEGIN_INTERVAL_TIME <= BI.END_TIME AND
+    ( BI.BEGIN_SNAP_ID = -1 OR
+      HSS.SNAP_ID >= BI.BEGIN_SNAP_ID ) AND
+    ( BI.END_SNAP_ID = -1 OR
+      HSS.SNAP_ID <= BI.END_SNAP_ID ) AND
+    ( BI.INSTANCE_NUMBER = -2 OR
+      HSS.INSTANCE_NUMBER = BI.INSTANCE_NUMBER )
+  GROUP BY
+    HSS.DBID,
+    HSS.INSTANCE_NUMBER
+),
+BLOCKED_SESSIONS AS
+( SELECT /*+ MATERIALIZE */
+    ASH.SAMPLE_TIME,
+    ASH.SAMPLE_ID,
+    ASH.INST_ID,
+    ASH.SESSION_ID,
+    ASH.BLOCKING_INST_ID,
+    ASH.BLOCKING_SESSION BLOCKING_SESSION_ID,
+    DECODE(ASH.SESSION_STATE, 'WAITING', ASH.EVENT, 'CPU') ACTION,
+    ASH.P1,
+    ASH.P2,
+    ASH.P3,
+    ASH.PROGRAM,
+    ASH.MODULE,
+    ASH.CLIENT_ID,
+    ASH.SQL_ID,
+    ASH.CURRENT_OBJ# ROW_WAIT_OBJ#,
+    ASH.CURRENT_FILE# ROW_WAIT_FILE#,
+    ASH.CURRENT_BLOCK# ROW_WAIT_BLOCK#,
+    ASH.CURRENT_ROW# ROW_WAIT_ROW#
+  FROM
+    BASIS_INFO BI,
+    GV$ACTIVE_SESSION_HISTORY ASH
+  WHERE
+    ( BI.INSTANCE_NUMBER = -2 OR BI.INSTANCE_NUMBER = ASH.INST_ID ) AND
+    ASH.SAMPLE_TIME BETWEEN BI.BEGIN_TIME AND BI.END_TIME AND
+    BI.DATA_SOURCE = 'CURRENT' AND
+    ASH.BLOCKING_SESSION IS NOT NULL
+  UNION ALL
+  ( SELECT
+      ASH.SAMPLE_TIME,
+      ASH.SAMPLE_ID,
+      ASH.INSTANCE_NUMBER INST_ID,
+      ASH.SESSION_ID,
+      ASH.BLOCKING_INST_ID,
+      ASH.BLOCKING_SESSION BLOCKING_SESSION_ID,
+      DECODE(ASH.SESSION_STATE, 'WAITING', ASH.EVENT, 'CPU') ACTION,
+      ASH.P1,
+      ASH.P2,
+      ASH.P3,
+      ASH.PROGRAM,
+      ASH.MODULE,
+      ASH.CLIENT_ID,
+      ASH.SQL_ID,
+      ASH.CURRENT_OBJ# ROW_WAIT_OBJ#,
+      ASH.CURRENT_FILE# ROW_WAIT_FILE#,
+      ASH.CURRENT_BLOCK# ROW_WAIT_BLOCK#,
+      ASH.CURRENT_ROW# ROW_WAIT_ROW#
+    FROM
+      BASIS_INFO BI,
+      SNAPSHOTS SS,
+      DBA_HIST_ACTIVE_SESS_HISTORY ASH
+    WHERE
+      ASH.DBID = BI.DBID AND
+      ( BI.INSTANCE_NUMBER = -2 OR BI.INSTANCE_NUMBER = ASH.INSTANCE_NUMBER ) AND
+      ASH.SNAP_ID BETWEEN SS.BEGIN_SNAP_ID AND SS.END_SNAP_ID AND
+      ASH.SAMPLE_TIME BETWEEN BI.BEGIN_TIME AND BI.END_TIME AND
+      BI.DATA_SOURCE = 'AWR' AND
+      ASH.BLOCKING_SESSION IS NOT NULL
+  )
+),
+BLOCKING_SESSIONS AS
+( SELECT DISTINCT /*+ MATERIALIZE */
+    BS.SAMPLE_TIME,
+    BS.SAMPLE_ID,
+    BS.BLOCKING_INST_ID INST_ID,
+    BS.BLOCKING_SESSION_ID SESSION_ID,
+    ASH.BLOCKING_INST_ID,
+    ASH.BLOCKING_SESSION BLOCKING_SESSION_ID,
+    DECODE(ASH.SESSION_STATE, NULL, 'INACTIVE', 'WAITING', ASH.EVENT||decode(tm_delta_time,null,' (long)',''), 'CPU') ACTION,
+    ASH.P1,
+    ASH.P2,
+    ASH.P3,
+    ASH.PROGRAM,
+    ASH.MODULE,
+    ASH.CLIENT_ID,
+    DECODE(ASH.SESSION_STATE, NULL, 'INACTIVE', ASH.SQL_ID) SQL_ID,
+    ASH.CURRENT_OBJ# ROW_WAIT_OBJ#,
+    ASH.CURRENT_FILE# ROW_WAIT_FILE#,
+    ASH.CURRENT_BLOCK# ROW_WAIT_BLOCK#,
+    ASH.CURRENT_ROW# ROW_WAIT_ROW#
+  FROM
+    BASIS_INFO BI,
+    BLOCKED_SESSIONS BS,
+    GV$SESSION S,
+    GV$ACTIVE_SESSION_HISTORY ASH
+  WHERE
+    BS.SAMPLE_TIME = ASH.SAMPLE_TIME (+) AND
+    BS.BLOCKING_SESSION_ID = ASH.SESSION_ID (+) AND
+    BS.BLOCKING_SESSION_ID = S.SID (+) AND
+    BS.BLOCKING_INST_ID = ASH.INST_ID (+) AND
+    BS.BLOCKING_INST_ID = S.INST_ID (+) AND
+    BI.DATA_SOURCE = 'CURRENT'
+  UNION ALL
+  ( SELECT DISTINCT
+      BS.SAMPLE_TIME,
+      BS.SAMPLE_ID,
+      BS.BLOCKING_INST_ID INST_ID,
+      BS.BLOCKING_SESSION_ID SESSION_ID,
+      ASH.BLOCKING_INST_ID,
+      ASH.BLOCKING_SESSION BLOCKING_SESSION_ID,
+      DECODE(ASH.SESSION_STATE, NULL, 'INACTIVE', 'WAITING', ASH.EVENT||decode(tm_delta_time,null,' (long)',''), 'CPU') ACTION,
+      ASH.P1,
+      ASH.P2,
+      ASH.P3,
+      ASH.PROGRAM,
+      ASH.MODULE,
+      ASH.CLIENT_ID,
+      DECODE(ASH.SESSION_STATE, NULL, 'INACTIVE', ASH.SQL_ID) SQL_ID,
+      ASH.CURRENT_OBJ# ROW_WAIT_OBJ#,
+      ASH.CURRENT_FILE# ROW_WAIT_FILE#,
+      ASH.CURRENT_BLOCK# ROW_WAIT_BLOCK#,
+      ASH.CURRENT_ROW# ROW_WAIT_ROW#
+    FROM
+      BASIS_INFO BI,
+      SNAPSHOTS SS,
+      BLOCKED_SESSIONS BS,
+      GV$SESSION S,
+      DBA_HIST_ACTIVE_SESS_HISTORY ASH
+    WHERE
+      BS.SAMPLE_TIME = ASH.SAMPLE_TIME (+) AND
+      BS.BLOCKING_SESSION_ID = ASH.SESSION_ID (+) AND
+      BS.BLOCKING_SESSION_ID = S.SID (+) AND
+      BS.BLOCKING_INST_ID = ASH.INSTANCE_NUMBER (+) AND
+      BS.BLOCKING_INST_ID = S.INST_ID (+) AND
+      BI.DATA_SOURCE = 'AWR'
+  )
+),
+ALL_RELEVANT_SESSIONS AS
+( SELECT
+    *
+  FROM
+    BLOCKED_SESSIONS
+  UNION
+  ( SELECT
+      *
+    FROM
+      BLOCKING_SESSIONS
+  )
+),
+RELEVANT_SAMPLE_TIMES AS
+( SELECT /*+MATERIALIZE*/ /*prevent ORA-32034*/ DISTINCT
+    S.SAMPLE_TIME,
+    S.SAMPLE_ID
+  FROM
+    BASIS_INFO BI,
+    ALL_RELEVANT_SESSIONS S
+  WHERE
+    S.BLOCKING_SESSION_ID IS NOT NULL AND
+    NVL(S.SQL_ID, ' ') LIKE BI.waiter_sql_id AND
+    NVL(S.ACTION, ' ') LIKE BI.waiter_event
+)
+select /* with filter of negligible */
+  t.date_time,
+  t.week,
+  t.day,
+  t.date_,
+  t.time,
+  t.hour,
+  t.waiter_samples,
+  round(t.waiter_pct) waiter_pct,
+  t.root_blocker_action,
+  t.root_blocker_sql_id,
+  t.root_blocker_module,
+  t.root_blocker_CLIENT_ID,
+  t.root_blocker_inst_id,
+  t.root_blocker_session_id,
+  t.root_blocker_program,
+  t.waiter_action,
+  t.waiter_sql_id,
+  t.waiter_enq_type,
+  t.waiter_enq_request,
+  t.waiter_row_wait_obj#,
+  t.additional_information
+from
+( /* with pct impact per aggregation time */
+  select
+    decode(bi.GROUP_BY_SAMPLE_TIME,
+      ' ','',
+      t.sample_time||' ->') date_time,
+    decode(bi.GROUP_BY_SAMPLE_TIME,
+      ' ','',
+      to_char(to_date(t.sample_time,bi.GROUP_BY_SAMPLE_TIME),'YYYY-IW')) week,
+    decode(bi.GROUP_BY_SAMPLE_TIME,
+      ' ','',
+      to_char(to_date(t.sample_time,bi.GROUP_BY_SAMPLE_TIME),'Dy')) day,
+    decode(bi.GROUP_BY_SAMPLE_TIME,
+      ' ','',
+      to_char(to_date(t.sample_time,bi.GROUP_BY_SAMPLE_TIME),'yyyy-mm-dd')) date_,
+    decode(bi.GROUP_BY_SAMPLE_TIME,
+      ' ','',
+      to_char(to_date(t.sample_time,bi.GROUP_BY_SAMPLE_TIME),'hh24:mi:ss')) time,
+    decode(bi.GROUP_BY_SAMPLE_TIME,
+      ' ','',
+      to_char(to_date(t.sample_time,bi.GROUP_BY_SAMPLE_TIME),'hh24')) hour,
+    t.waiter_samples,
+    ratio_to_report(t.waiter_samples) over(partition by t.sample_time) * 100 waiter_pct,
+    t.root_blocker_inst_id,
+    t.root_blocker_session_id,
+    t.root_blocker_action,
+    t.root_blocker_sql_id,
+    t.root_blocker_program,
+    t.root_blocker_module,
+    t.root_blocker_CLIENT_ID,
+    t.waiter_action,
+    t.waiter_sql_id,
+    t.waiter_enq_type,
+    t.waiter_enq_request,
+    t.waiter_row_wait_obj#,
+    t.additional_information
+  from
+  ( /* main aggregation */
+    select
+      to_char(SAMPLE_TIME,bi.GROUP_BY_SAMPLE_TIME) sample_time,
+      count(*) waiter_samples,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'inst_id'),
+        0,null,t.root_blocker_inst_id) root_blocker_inst_id,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'session_id'),
+        0,null,t.root_blocker_session_id) root_blocker_session_id,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'program'),
+        0,null,t.root_blocker_program) root_blocker_program,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'module'),
+        0,null,t.root_blocker_module) root_blocker_module,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'CLIENT_ID'),
+        0,null,t.root_blocker_CLIENT_ID) root_blocker_CLIENT_ID,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'action'),
+        0,null,t.root_blocker_action) root_blocker_action,
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'sql_id'),
+        0,null,t.root_blocker_sql_id) root_blocker_sql_id,
+      decode(instr(bi.GROUP_BY_WAITER,'action'),
+        0,null,t.waiter_action) waiter_action,
+      decode(instr(bi.GROUP_BY_WAITER,'sql_id'),
+        0,null,t.waiter_sql_id) waiter_sql_id,
+      decode(instr(bi.GROUP_BY_WAITER,'enq_type'),
+        0,null,t.waiter_enq_type) waiter_enq_type,
+      decode(instr(bi.GROUP_BY_WAITER,'enq_request'),
+        0,null,t.waiter_enq_request) waiter_enq_request,
+      decode(instr(bi.GROUP_BY_WAITER,'row_wait_obj#'),
+        0,null,t.waiter_row_wait_obj#) waiter_row_wait_obj#,
+      decode(instr(bi.GROUP_BY_WAITER,'row_id_statement'),
+        0,null,
+        decode(t.waiter_row_wait_obj#,
+          null,null,
+          -1,null,
+          'select * from obj_id_'||t.waiter_row_wait_obj#
+            ||' where rowid=dbms_rowid.rowid_create(1,'
+            ||t.waiter_row_wait_obj#||','||t.waiter_row_wait_file#||','
+            ||t.waiter_row_wait_block#||','||t.waiter_row_wait_row#||')')) additional_information
+    from
+    ( /* unaggregated - one line one waiter */
+      select
+        S.SAMPLE_TIME,
+        connect_by_root s.inst_id root_blocker_inst_id,
+        connect_by_root s.session_id root_blocker_session_id,
+        connect_by_root s.program root_blocker_program,
+        connect_by_root s.module root_blocker_module,
+        connect_by_root s.CLIENT_ID root_blocker_CLIENT_ID,
+        connect_by_root s.action root_blocker_action,
+        connect_by_root s.sql_id root_blocker_sql_id,
+        S.ACTION waiter_action,
+        S.SQL_ID waiter_sql_id,
+        DECODE(SUBSTR(S.ACTION, 1, 4), 'enq:', CHR(BITAND(S.P1, -16777216) / 16777215) ||
+          CHR(BITAND(S.P1, 16711680) / 65535), NULL) waiter_enq_type,
+        DECODE(SUBSTR(S.ACTION, 1, 4), 'enq:', DECODE(BITAND(S.P1, 65535), 4, '4 (Shared)',
+          6, '6 (Exclusive)', BITAND(S.P1, 65535)), NULL) waiter_enq_request,
+        DECODE(S.ACTION, 'enq: TX - row lock contention', S.ROW_WAIT_OBJ#, NULL) waiter_row_wait_obj#,
+        DECODE(S.ACTION, 'enq: TX - row lock contention', S.ROW_WAIT_FILE#, NULL) waiter_row_wait_file#,
+        DECODE(S.ACTION, 'enq: TX - row lock contention', S.ROW_WAIT_BLOCK#, NULL) waiter_row_wait_block#,
+        DECODE(S.ACTION, 'enq: TX - row lock contention', S.ROW_WAIT_ROW#, NULL) waiter_row_wait_row#
+      FROM
+        ALL_RELEVANT_SESSIONS S,
+        RELEVANT_SAMPLE_TIMES T
+      WHERE
+        S.SAMPLE_ID = T.SAMPLE_ID and
+        level > 1
+      CONNECT BY
+        PRIOR S.SAMPLE_ID = S.SAMPLE_ID AND
+        PRIOR S.SESSION_ID = S.BLOCKING_SESSION_ID AND
+        PRIOR S.INST_ID = S.BLOCKING_INST_ID
+      START WITH
+        S.BLOCKING_SESSION_ID IS NULL AND
+        S.BLOCKING_INST_ID IS NULL
+    ) t,
+      basis_info bi
+    where
+      nvl(t.waiter_action,' ') like bi.waiter_event and
+      nvl(t.waiter_sql_id,' ') like bi.waiter_sql_id and
+      nvl(t.root_blocker_action,' ') like bi.root_blocker_event and
+      nvl(t.root_blocker_sql_id,' ') like bi.root_blocker_sql_id
+    group by
+      to_char(t.SAMPLE_TIME,bi.GROUP_BY_SAMPLE_TIME),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'inst_id'),
+        0,null,t.root_blocker_inst_id),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'session_id'),
+        0,null,t.root_blocker_session_id),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'program'),
+        0,null,t.root_blocker_program),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'module'),
+        0,null,t.root_blocker_module),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'CLIENT_ID'),
+        0,null,t.root_blocker_CLIENT_ID),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'action'),
+        0,null,t.root_blocker_action),
+      decode(instr(bi.GROUP_BY_ROOT_BLOCKER,'sql_id'),
+        0,null,t.root_blocker_sql_id),
+      decode(instr(bi.GROUP_BY_WAITER,'action'),
+        0,null,t.waiter_action),
+      decode(instr(bi.GROUP_BY_WAITER,'sql_id'),
+        0,null,t.waiter_sql_id),
+      decode(instr(bi.GROUP_BY_WAITER,'enq_type'),
+        0,null,t.waiter_enq_type),
+      decode(instr(bi.GROUP_BY_WAITER,'enq_request'),
+        0,null,t.waiter_enq_request),
+      decode(instr(bi.GROUP_BY_WAITER,'row_wait_obj#'),
+        0,null,t.waiter_row_wait_obj#),
+      decode(instr(bi.GROUP_BY_WAITER,'row_id_statement'),
+        0,null,
+        decode(waiter_row_wait_obj#,
+          null,null,
+          -1,null,
+          'select * from obj_id_'||t.waiter_row_wait_obj#
+            ||' where rowid=dbms_rowid.rowid_create(1,'
+            ||t.waiter_row_wait_obj#||','||t.waiter_row_wait_file#||','
+            ||t.waiter_row_wait_block#||','||t.waiter_row_wait_row#||')'))
+  ) t,
+    basis_info bi
+  order by
+    t.sample_time desc,
+    t.waiter_samples desc
+) t,
+  basis_info bi
+where
+  t.waiter_pct > bi.min_pct and
+  t.waiter_samples > bi.min_samples
+
+
+
+

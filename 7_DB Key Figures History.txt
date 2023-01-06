@@ -1,0 +1,411 @@
+select
+  null date_time,
+  null week,
+  null day,
+  null date_,
+  null time,
+  null physical_reads,
+  null logical_reads,
+  null user_calls,
+  null db_block_changes,
+  null consistent_changes,
+  null hit_ratio,
+  null reads_per_user_call,
+  null rec_calls_per_user_call,
+  null time_per_user_call_ms,
+  null user_calls_per_sec,
+  null recursive_calls_per_sec,
+  null logical_reads_per_sec,
+  null physical_reads_per_sec,
+  null block_changes_per_sec,
+  null consistent_changes_per_sec,
+  null physical_writes_per_sec,
+  null redo_blocks_written_per_sec,
+  null table_fetch_by_rowid_per_sec,
+  null table_fetch_con_row_per_sec,
+  null KB_received_per_sec,
+  null round_trips_per_sec,
+  null KB_sent_per_sec,
+  null commits_per_sec,
+  null active_sessions,
+  null cpus_used,
+  null gc_current_block_receive_hours,
+  null avg_gc_current_block_rec_ms,
+  null gc_current_blocks_received,
+  null gc_cr_block_receive_hours,
+  null  avg_gc_cr_block_rec_ms,
+  null gc_cr_blocks_received,
+  null gc_current_block_send_hours,
+  null gc_cr_block_send_hours,
+  null top_sql_buffer_gets,
+  null top_sql_rows_processed,
+  null  top_sql_buffer_gets_per_row,
+  null inst_id
+from dual where 1=0
+union all (
+select
+  null date_time,
+  null week,
+  null day,
+  null date_,
+  null time,
+  null physical_reads,
+  null logical_reads,
+  null user_calls,
+  null db_block_changes,
+  null consistent_changes,
+  null hit_ratio,
+  null reads_per_user_call,
+  null rec_calls_per_user_call,
+  null time_per_user_call_ms,
+  null user_calls_per_sec,
+  null recursive_calls_per_sec,
+  null logical_reads_per_sec,
+  null physical_reads_per_sec,
+  null block_changes_per_sec,
+  null consistent_changes_per_sec,
+  null physical_writes_per_sec,
+  null redo_blocks_written_per_sec,
+  null table_fetch_by_rowid_per_sec,
+  null table_fetch_con_row_per_sec,
+  null KB_received_per_sec,
+  null round_trips_per_sec,
+  null KB_sent_per_sec,
+  null commits_per_sec,
+  null active_sessions,
+  null cpus_used,
+  null gc_current_block_receive_hours,
+  null avg_gc_current_block_rec_ms,
+  null gc_current_blocks_received,
+  null gc_cr_block_receive_hours,
+  null  avg_gc_cr_block_rec_ms,
+  null gc_cr_blocks_received,
+  null gc_current_block_send_hours,
+  null gc_cr_block_send_hours,
+  null top_sql_buffer_gets,
+  null top_sql_rows_processed,
+  null  top_sql_buffer_gets_per_row,
+  null inst_id
+from dual where 1=0
+)
+union all
+(
+select
+  date_time,
+  week,
+  day,
+  date_,
+  time,
+  physical_reads,
+  logical_reads,
+  user_calls,
+  db_block_changes,
+  consistent_changes,
+  hit_ratio,
+  reads_per_user_call,
+  rec_calls_per_user_call,
+  time_per_user_call_ms,
+  user_calls_per_sec,
+  recursive_calls_per_sec,
+  logical_reads_per_sec,
+  physical_reads_per_sec,
+  block_changes_per_sec,
+  consistent_changes_per_sec,
+  physical_writes_per_sec,
+  redo_blocks_written_per_sec,
+  table_fetch_by_rowid_per_sec,
+  table_fetch_con_row_per_sec,
+  KB_received_per_sec,
+  round_trips_per_sec,
+  KB_sent_per_sec,
+  commits_per_sec,
+  active_sessions,
+  cpus_used,
+  gc_current_block_receive_hours,
+  avg_gc_current_block_rec_ms,
+  gc_current_blocks_received,
+  gc_cr_block_receive_hours,
+  avg_gc_cr_block_rec_ms,
+  gc_cr_blocks_received,
+  gc_current_block_send_hours,
+  gc_cr_block_send_hours,
+  top_sql_buffer_gets,
+  top_sql_rows_processed,
+  top_sql_buffer_gets_per_row,
+  inst_id
+from
+(
+with sysstat_total as
+(
+  select
+    instance_number,
+    snap_id as snap_id,
+    stat_name,
+    value
+  from
+    dba_hist_sysstat
+  where
+    stat_name in
+    (
+'physical reads',
+'session logical reads',
+'user calls',
+'db block changes',
+'consistent changes',
+'user commits',
+'recursive calls',
+'redo blocks written',
+'table fetch by rowid',
+'DB time',
+'physical writes',
+'table fetch continued row',
+'bytes sent via SQL*Net to client',
+'bytes received via SQL*Net f'||'rom client',
+'SQL*Net roundtrips to/f'||'rom client',
+'CPU used by this session',
+'gc current blocks received',
+'gc current block receive time',
+'gc cr block receive time',
+'gc cr blocks received',
+'gc current block send time',
+'gc current blocks served',
+'gc cr block send time',
+'gc cr blocks served'
+    )
+),
+snap_id as
+(
+  select
+    hs.instance_number instance_number,
+    hs.snap_id snap_id,
+    hs.startup_time startup_time,
+    hs.begin_interval_time begin_interval_time,
+    hs.end_interval_time end_interval_time
+  from
+    dba_hist_snapshot hs,
+    (
+      select
+        min(snap_id) min_snap_id,
+        max(snap_id) max_snap_id
+      from
+        dba_hist_snapshot
+      where
+        end_interval_time between
+          to_timestamp(rpad('1980-01-01 00:00',
+            19,':00'),'yyyy-mm-dd hh24:mi:ss') and
+          to_timestamp(rpad('9999-12-31 00:00',
+            19,':00'),'yyyy-mm-dd hh24:mi:ss')
+    ) minmax
+  where
+    hs.snap_id > minmax.min_snap_id and
+    hs.snap_id <= minmax.max_snap_id
+  union all
+  (
+    select
+      instance_number,
+      snap_id,
+      startup_time,
+      null,
+      null
+    from
+      dba_hist_snapshot
+    where
+      snap_id in
+      (
+        select
+          min(snap_id) snap_id
+        from
+          dba_hist_snapshot
+        where
+          end_interval_time between
+            to_timestamp(rpad('1980-01-01 00:00',
+              19,':00'),'yyyy-mm-dd hh24:mi:ss') and
+            to_timestamp(rpad('9999-12-31 00:00',
+              19,':00'),'yyyy-mm-dd hh24:mi:ss')
+      )
+  )
+),
+timestamp_and_sysstat_delta as
+(
+  select
+    g.instance_number as instance_number,
+    g.snap_id as snap_id,
+    g.begin_interval_time,
+    g.end_interval_time,
+    to_number(substr(to_char(g.end_interval_time-g.begin_interval_time,
+'HH24:MM:SS'),2,8))*86400+
+    to_number(substr(to_char(g.end_interval_time-g.begin_interval_time,
+'HH24:MM:SS'),12,2))*3600+
+    to_number(substr(to_char(g.end_interval_time-g.begin_interval_time,
+'HH24:MM:SS'),15,2))*60+
+    to_number(substr(to_char(g.end_interval_time-g.begin_interval_time,
+'HH24:MM:SS'),18,2)) ss_diff_time,
+    sum(decode(g.stat_name,
+'physical reads',g.delta_value,0)) physical_reads,
+    sum(decode(g.stat_name,
+'session logical reads',g.delta_value,0)) logical_reads,
+    sum(decode(g.stat_name,
+'user calls',g.delta_value,0)) user_calls,
+    sum(decode(g.stat_name,
+'db block changes',g.delta_value,0)) db_block_changes,
+    sum(decode(g.stat_name,
+'consistent changes',g.delta_value,0)) consistent_changes,
+    sum(decode(g.stat_name,
+'user commits',g.delta_value,0)) user_commits,
+    sum(decode(g.stat_name,
+'recursive calls',g.delta_value,0)) recursive_calls,
+    sum(decode(g.stat_name,
+'DB time',g.delta_value,0)) db_time,
+    sum(decode(g.stat_name,
+'physical writes',g.delta_value,0)) physical_writes,
+    sum(decode(g.stat_name,
+'redo blocks written',g.delta_value,0)) redo_blocks_written,
+    sum(decode(g.stat_name,
+'table fetch by rowid',g.delta_value,0)) table_fetch_by_rowid,
+    sum(decode(g.stat_name,
+'table fetch continued row',g.delta_value,0)) table_fetch_continued_row,
+    sum(decode(g.stat_name,
+'bytes received via SQL*Net f'||'rom client',g.delta_value,0)) bytes_rec_SQLNet_frm_cl,
+    sum(decode(g.stat_name,
+'SQL*Net roundtrips to/f'||'rom client',g.delta_value,0)) SQLNet_roundtrips_to_frm_cl,
+    sum(decode(g.stat_name,
+'bytes sent via SQL*Net to client',g.delta_value,0)) bytes_sent_SQLNet_to_cl,
+    sum(decode(g.stat_name,
+'CPU used by this session',g.delta_value,0)) cpu_time,
+    sum(decode(g.stat_name,
+'gc current block receive time',g.delta_value,0)) gc_current_block_receive_time,
+    sum(decode(g.stat_name,
+'gc current blocks received',g.delta_value,0)) gc_current_blocks_received,
+    sum(decode(g.stat_name,
+'gc cr block receive time',g.delta_value,0)) gc_cr_block_receive_time,
+    sum(decode(g.stat_name,
+'gc cr blocks received',g.delta_value,0)) gc_cr_blocks_received,
+    sum(decode(g.stat_name,
+'gc current block send time',g.delta_value,0)) gc_current_block_send_time,
+    sum(decode(g.stat_name,
+'gc current blocks served',g.delta_value,0)) gc_current_blocks_served,
+    sum(decode(g.stat_name,
+'gc cr block send time',g.delta_value,0)) gc_cr_block_send_time,
+    sum(decode(g.stat_name,
+'gc cr blocks served',g.delta_value,0)) gc_cr_blocks_served
+  from
+  (
+    select
+      e.instance_number as instance_number,
+      e.snap_id as snap_id,
+      s.begin_interval_time,
+      s.end_interval_time,
+      e.stat_name,
+      decode(s.startup_time,
+        lag(s.startup_time) over (partition by e.instance_number, e.stat_name order by e.snap_id),
+          e.value-nvl(lag(e.value) over (partition by e.instance_number, e.stat_name order by e.snap_id),0),
+        e.value) delta_value
+    from
+      sysstat_total e,
+      snap_id s
+    where
+      e.instance_number = s.instance_number and
+      e.snap_id = s.snap_id
+  ) g
+  where
+    g.begin_interval_time is not null
+  group by
+    g.instance_number,
+    g.snap_id,
+    g.begin_interval_time,
+    g.end_interval_time
+),
+sqlstat_delta as
+(
+  select
+    instance_number as instance_number,
+    snap_id as snap_id,
+    sum(rows_processed_delta) top_sql_rows_processed,
+    sum(buffer_gets_delta) top_sql_buffer_gets,
+    sum(disk_reads_delta) top_sql_disk_reads,
+    sum(elapsed_time_delta) top_sql_elapsed_time
+  from
+    dba_hist_sqlstat
+  group by
+    instance_number,
+    snap_id
+)
+select
+  sys.snap_id,
+  concat('->',to_char(end_interval_time+1/288,
+    'YY-MM-DD  HH24:MI')) date_time,
+  to_char(end_interval_time,'yyyy-iw') week,
+  to_char(end_interval_time,'DY') day,
+  to_char(end_interval_time,'yyyy-mm-dd') date_,
+  concat('->',to_char(end_interval_time+1/288,
+    'HH24:MI')) time,
+  physical_reads,
+  logical_reads,
+  user_calls,
+  db_block_changes,
+  consistent_changes,
+  decode(logical_reads,0,-1,
+    greatest(0,round((1-(physical_reads/logical_reads))*100,2))) hit_ratio,
+  decode(user_calls,0,-1,
+    round(logical_reads/user_calls,2)) reads_per_user_call,
+  decode(user_calls,0,-1,
+    round(recursive_calls/user_calls,2)) rec_calls_per_user_call,
+  decode(user_calls,0,-1,
+    round(db_time*10/user_calls,2)) time_per_user_call_ms,
+  decode(ss_diff_time,0,-1,
+    round(user_calls/ss_diff_time,2)) user_calls_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(recursive_calls/ss_diff_time,2)) recursive_calls_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(logical_reads/ss_diff_time,2)) logical_reads_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(physical_reads/ss_diff_time,2)) physical_reads_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(db_block_changes/ss_diff_time,2)) block_changes_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(consistent_changes/ss_diff_time,2)) consistent_changes_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(physical_writes/ss_diff_time,2)) physical_writes_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(redo_blocks_written/ss_diff_time,2)) redo_blocks_written_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(table_fetch_by_rowid/ss_diff_time,2)) table_fetch_by_rowid_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(table_fetch_continued_row/ss_diff_time,2)) table_fetch_con_row_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(bytes_rec_SQLNet_frm_cl/ss_diff_time/1024,2)) KB_received_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(SQLNet_roundtrips_to_frm_cl/ss_diff_time,2)) round_trips_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(bytes_sent_SQLNet_to_cl/ss_diff_time/1024,2)) KB_sent_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(user_commits/ss_diff_time,2)) commits_per_sec,
+  decode(ss_diff_time,0,-1,
+    round(db_time/100/ss_diff_time,2)) active_sessions,
+  decode(ss_diff_time,0,-1,
+    round(cpu_time/100/ss_diff_time,2)) cpus_used,
+  round(gc_current_block_receive_time/360000,2) gc_current_block_receive_hours,
+  decode(gc_current_blocks_received,0,-1,
+    round(gc_current_block_receive_time*10/gc_current_blocks_received,2)) avg_gc_current_block_rec_ms,
+  gc_current_blocks_received,
+  round(gc_cr_block_receive_time/360000,2) gc_cr_block_receive_hours,
+  decode(gc_cr_blocks_received,0,-1,
+    round(gc_cr_block_receive_time*10/gc_cr_blocks_received,2)) avg_gc_cr_block_rec_ms,
+  gc_cr_blocks_received,
+  round(gc_current_block_send_time/360000,2) gc_current_block_send_hours,
+  round(gc_cr_block_send_time/360000,2) gc_cr_block_send_hours,
+  top_sql_buffer_gets,
+  top_sql_rows_processed,
+  decode(top_sql_rows_processed,0,-1,
+    round(top_sql_buffer_gets/top_sql_rows_processed,2)) top_sql_buffer_gets_per_row,
+  sys.instance_number as inst_id
+from
+  timestamp_and_sysstat_delta sys,
+  sqlstat_delta sql
+where
+  sys.snap_id=sql.snap_id and
+  sys.instance_number=sql.instance_number
+ORDER BY 
+  sql.snap_id, 
+  sql.instance_number
+));

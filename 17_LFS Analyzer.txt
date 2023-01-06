@@ -1,0 +1,190 @@
+SELECT NULL date_time, NULL week, NULL day, NULL date_, NULL time,
+  NULL REDO_SIZE_MB, NULL REDO_WRITES, NULL "KB_WRITE",
+  NULL "MS_WRT_REQ", NULL "MS_WRT_MB", NULL "WRT_BUSY_PCT", NULL SYNC_REQS,
+  NULL "MS_SYNC_REQ", NULL SYNC_SESS,
+  NULL commits, NULL lpw_waits, NULL lfs_waits,
+  NULL lfs_timeouts, null lfs_waits_adapt, null lpw_avg_ms,
+  null lfs_avg_ms, null lfs_adapt_avg_ms,
+  null lfs_lpw_time_ratio_adapted, null lfs_lpw_waits_ratio_adapted,
+  null lfs_lpw_time_ratio, null lfs_lpw_waits_ratio, null instance_number FROM DUAL WHERE 1 = 0
+UNION ALL (
+SELECT NULL date_time, NULL week, NULL day, NULL date_, NULL time,
+  NULL REDO_SIZE_MB, NULL REDO_WRITES, NULL "KB_WRITE",
+  NULL "MS_WRT_REQ", NULL "MS_WRT_MB", NULL "WRT_BUSY_PCT", NULL SYNC_REQS,
+  NULL "MS_SYNC_REQ", NULL SYNC_SESS,
+  NULL commits, NULL lpw_waits, NULL lfs_waits,
+  NULL lfs_timeouts, null lfs_waits_adapt, null lpw_avg_ms,
+  null lfs_avg_ms, null lfs_adapt_avg_ms,
+  null lfs_lpw_time_ratio_adapted, null lfs_lpw_waits_ratio_adapted,
+  null lfs_lpw_time_ratio, null lfs_lpw_waits_ratio, null instance_number FROM DUAL WHERE 1 = 0
+) UNION ALL ( SELECT * FROM (
+WITH BASIS_INFO AS
+( SELECT
+    DECODE(DBID, -1, OWN_DBID, DBID) DBID,
+    DECODE(INSTANCE_NUMBER, -1, OWN_INSTANCE_NUMBER,
+      INSTANCE_NUMBER) INSTANCE_NUMBER,
+    BEGIN_DATE,
+    END_DATE,
+    TO_TIMESTAMP(TO_CHAR(BEGIN_DATE, 'dd.mm.yyyy hh24:mi:ss'),
+      'dd.mm.yyyy hh24:mi:ss') BEGIN_TIME,
+    TO_TIMESTAMP(TO_CHAR(END_DATE, 'dd.mm.yyyy hh24:mi:ss'),
+      'dd.mm.yyyy hh24:mi:ss') END_TIME
+  FROM
+  ( SELECT
+      to_number(nvl('-1','-1')) DBID,
+        /* >0=choosen; -1=CURRENT; -2=each individually*/
+      to_number(nvl('-2','-1')) INSTANCE_NUMBER,
+      TO_DATE(rpad('1980-01-01 00:00',
+        19,':00'),'YYYY-MM-DD HH24:MI:SS') BEGIN_DATE,
+      TO_DATE(rpad('9999-12-31 00:00',
+        19,':00'),'YYYY-MM-DD HH24:MI:SS') END_DATE
+    FROM
+      DUAL
+  ),
+  ( SELECT DBID OWN_DBID FROM V$DATABASE ),
+  ( SELECT INSTANCE_NUMBER OWN_INSTANCE_NUMBER FROM V$INSTANCE )
+),
+SNAPSHOTS AS
+( SELECT /*+ MATERIALIZE */
+    HSS2.DBID,
+    HSS2.INSTANCE_NUMBER,
+    HSS2.SNAP_ID,
+    HSS1.SNAP_ID PREV_SNAP_ID,
+    HSS2.BEGIN_INTERVAL_TIME,
+    HSS2.END_INTERVAL_TIME,
+    TO_CHAR(HSS2.END_INTERVAL_TIME, 'SSSSS') -
+      TO_CHAR(HSS2.BEGIN_INTERVAL_TIME, 'SSSSS') +
+      86400 * (TO_CHAR(HSS2.END_INTERVAL_TIME, 'J') -
+               TO_CHAR(HSS2.BEGIN_INTERVAL_TIME, 'J'))
+      INTERVAL_SECONDS,
+    DECODE(HSS2.STARTUP_TIME, HSS1.STARTUP_TIME, 'NO', 'YES') RESTART
+  FROM
+    BASIS_INFO BI,
+    DBA_HIST_SNAPSHOT HSS1,
+    DBA_HIST_SNAPSHOT HSS2
+  WHERE
+    HSS2.DBID = BI.DBID AND
+    HSS1.DBID (+) = HSS2.DBID AND
+    (HSS2.INSTANCE_NUMBER = BI.INSTANCE_NUMBER or BI.INSTANCE_NUMBER = -2)  AND
+    HSS1.INSTANCE_NUMBER (+) = HSS2.INSTANCE_NUMBER AND
+    HSS2.END_INTERVAL_TIME BETWEEN BI.BEGIN_TIME AND BI.END_TIME AND
+    HSS1.SNAP_ID (+) = HSS2.SNAP_ID - 1
+  ORDER BY
+    HSS2.SNAP_ID
+)
+SELECT
+    concat('->',to_char(begin_interval_time+1/288,
+      'YY-MM-DD  HH24:MI')) date_time,
+    to_char(BEGIN_INTERVAL_TIME,'YYYY-IW') week,
+    to_char(BEGIN_INTERVAL_TIME,'DY') day,
+    to_char(BEGIN_INTERVAL_TIME,'yyyy-mm-dd') date_,
+    concat('->',to_char(begin_interval_time+1/288,
+      'HH24:MI')) time,
+  TO_CHAR(REDO_SIZE_MB, 99999990.99) REDO_SIZE_MB,
+  TO_CHAR(REDO_WRITES, 9999999990) REDO_WRITES,
+  TO_CHAR(DECODE(REDO_WRITES, 0, 0, REDO_SIZE_MB / REDO_WRITES * 1000), 9999.99) "KB_WRITE",
+  TO_CHAR(DECODE(REDO_WRITES, 0, 0, WRITE_TIME_S / REDO_WRITES * 1000), 999990.99) "MS_WRT_REQ",
+  TO_CHAR(DECODE(REDO_SIZE_MB, 0, 0, WRITE_TIME_S / REDO_SIZE_MB * 1000), 99990.99) "MS_WRT_MB",
+  TO_CHAR(WRITE_TIME_S / SECONDS * 100, 999990.99) "WRT_BUSY_PCT",
+  TO_CHAR(SYNC_REQS, 99999990) SYNC_REQS,
+  TO_CHAR(DECODE(SYNC_REQS, 0, 0, SYNC_TIME_S / SYNC_REQS * 1000), 9999990.99) "MS_SYNC_REQ",
+  TO_CHAR(SYNC_TIME_S / SECONDS, 99990.99) SYNC_SESS,
+  TO_CHAR(commits) commits,
+  TO_CHAR(lpw_waits) lpw_waits,
+  TO_CHAR(lfs_waits) lfs_waits,
+  TO_CHAR(lfs_timeouts) lfs_timeouts,
+  TO_CHAR(lfs_waits-lfs_timeouts) lfs_waits_adapt,
+  TO_CHAR(round(lpw_time/lpw_waits/1000, 2)) lpw_avg_ms,
+  TO_CHAR(round(lfs_time/lfs_waits/1000, 2)) lfs_avg_ms,
+  TO_CHAR(round(lfs_time
+    /(lfs_waits-lfs_timeouts)/1000, 2)) lfs_adapt_avg_ms,
+  TO_CHAR(round(lfs_time/(lfs_waits-lfs_timeouts)
+    /lpw_time*lpw_waits, 2)) lfs_lpw_time_ratio_adapted,
+  TO_CHAR(round((lfs_waits-lfs_timeouts)
+    /lpw_waits, 2)) lfs_lpw_waits_ratio_adapted,
+  TO_CHAR(round(lfs_time/lfs_waits
+    /lpw_time*lpw_waits, 2)) lfs_lpw_time_ratio,
+  TO_CHAR(round(lfs_waits
+    /lpw_waits, 2)) lfs_lpw_waits_ratio,
+  INSTANCE_NUMBER
+FROM
+( SELECT
+    SS.BEGIN_INTERVAL_TIME,
+    SS.INTERVAL_SECONDS SECONDS,
+    DECODE(SS.RESTART, 'YES', HSY1.VALUE, HSY1.VALUE -
+      LAG(HSY1.VALUE, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) / 1024 / 1024 REDO_SIZE_MB,
+    DECODE(SS.RESTART, 'YES', HSY2.VALUE, HSY2.VALUE -
+      LAG(HSY2.VALUE, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) REDO_WRITES,
+    DECODE(SS.RESTART, 'YES', HSY3.VALUE, HSY3.VALUE -
+      LAG(HSY3.VALUE, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) / 100 WRITE_TIME_S,
+    DECODE(SS.RESTART, 'YES', HSY4.VALUE, HSY4.VALUE -
+      LAG(HSY4.VALUE, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) SYNC_REQS,
+    DECODE(SS.RESTART, 'YES', HSY5.VALUE, HSY5.VALUE -
+      LAG(HSY5.VALUE, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) / 100 SYNC_TIME_S,
+    DECODE(SS.RESTART, 'YES', HSY6.VALUE, HSY6.VALUE -
+      LAG(HSY6.VALUE, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) commits,
+    DECODE(SS.RESTART, 'YES', hse1.total_waits, hse1.total_waits -
+      LAG(hse1.total_waits, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) lfs_waits,
+    DECODE(SS.RESTART, 'YES', hse1.total_timeouts, hse1.total_timeouts -
+      LAG(hse1.total_timeouts, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) lfs_timeouts,
+    DECODE(SS.RESTART, 'YES', hse1.time_waited_micro, hse1.time_waited_micro -
+      LAG(hse1.time_waited_micro, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) lfs_time,
+    DECODE(SS.RESTART, 'YES', hse2.total_waits, hse2.total_waits -
+      LAG(hse2.total_waits, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) lpw_waits,
+    DECODE(SS.RESTART, 'YES', hse2.total_timeouts, hse2.total_timeouts -
+      LAG(hse2.total_timeouts, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) lpw_timeouts,
+    DECODE(SS.RESTART, 'YES', hse2.time_waited_micro, hse2.time_waited_micro -
+      LAG(hse2.time_waited_micro, 1) OVER (PARTITION BY SS.INSTANCE_NUMBER ORDER BY SS.SNAP_ID)) lpw_time,
+    SS.SNAP_ID,
+    SS.PREV_SNAP_ID,
+    SS.INSTANCE_NUMBER
+  FROM
+    BASIS_INFO BI,
+    SNAPSHOTS SS,
+    DBA_HIST_SYSSTAT HSY1,
+    DBA_HIST_SYSSTAT HSY2,
+    DBA_HIST_SYSSTAT HSY3,
+    DBA_HIST_SYSSTAT HSY4,
+    DBA_HIST_SYSSTAT HSY5,
+    DBA_HIST_SYSSTAT HSY6,
+    dba_hist_system_event hse1,
+    dba_hist_system_event hse2
+  WHERE
+    HSY1.DBID = SS.DBID AND
+    HSY2.DBID = SS.DBID AND
+    HSY3.DBID = SS.DBID AND
+    HSY4.DBID = SS.DBID AND
+    HSY5.DBID = SS.DBID AND
+    HSY6.DBID = SS.DBID AND
+    hse1.DBID = ss.DBID AND
+    hse2.DBID = ss.DBID AND
+    HSY1.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    HSY2.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    HSY3.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    HSY4.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    HSY5.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    HSY6.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    hse1.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    hse2.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+    HSY1.SNAP_ID = SS.SNAP_ID AND
+    HSY2.SNAP_ID = SS.SNAP_ID AND
+    HSY3.SNAP_ID = SS.SNAP_ID AND
+    HSY4.SNAP_ID = SS.SNAP_ID AND
+    HSY5.SNAP_ID = SS.SNAP_ID AND
+    HSY6.SNAP_ID = SS.SNAP_ID AND
+    hse1.SNAP_ID = SS.SNAP_ID AND
+    hse2.SNAP_ID = SS.SNAP_ID AND
+    HSY1.STAT_NAME = 'redo size' AND
+    HSY2.STAT_NAME = 'redo writes' AND
+    HSY3.STAT_NAME = 'redo write time' AND
+    HSY4.STAT_NAME = 'redo synch writes' AND
+    HSY5.STAT_NAME = 'redo synch time' and
+    HSY6.STAT_NAME = 'user commits' and
+    hse1.event_name='log file sync' and
+    hse2.event_name='log file parallel write'
+  ORDER BY
+    SS.SNAP_ID DESC
+)
+WHERE
+  PREV_SNAP_ID IS NOT NULL
+));

@@ -1,0 +1,122 @@
+select
+    q.dbid,
+    inst_id,
+    snap_id,
+    concat('->',to_char(end_interval_time+1/288,
+      'YY-MM-DD  HH24:MI')) date_time,
+    to_char(end_interval_time,'YYYY-IW') week,
+    to_char(end_interval_time,'DY') day,
+    to_char(end_interval_time,'yyyy-mm-dd') date_,
+    concat('->',to_char(end_interval_time+1/288,
+      'HH24:MI')) time,
+    event_name,
+    wait_time_milli,
+    time_waited_sec waited_sec,
+    lpad(round(RATIO_TO_REPORT(time_waited_sec) OVER
+      (partition by dbid, inst_id, snap_id, event_name) * 100),13) pct_waited_sec,
+    waits,
+    lpad(round(RATIO_TO_REPORT(waits) OVER
+      (partition by dbid, inst_id, snap_id, event_name) * 100),9) pct_waits
+  from
+  (
+   select
+      e.dbid,
+      e.instance_number as inst_id,
+      e.snap_id as snap_id,
+      begin_interval_time,
+      end_interval_time,
+      event_name,
+      wait_time_milli,
+      decode(startup_time,
+        lag(startup_time) over (partition by e.dbid, e.instance_number, event_name, wait_time_milli order by e.snap_id),
+          time_waited_sec-nvl(lag(time_waited_sec) over (
+            partition by e.dbid, e.instance_number, event_name, wait_time_milli order by e.snap_id),0),
+        time_waited_sec) time_waited_sec,
+      decode(startup_time,
+        lag(startup_time) over (partition by e.dbid, e.instance_number, event_name, wait_time_milli order by e.snap_id),
+          waits-nvl(lag(waits) over (
+            partition by e.dbid, e.instance_number, event_name, wait_time_milli order by e.snap_id),0),
+        waits) waits
+      from
+      (
+        select
+          dbid,
+          instance_number,
+          snap_id,
+          event_name,
+          WAIT_TIME_MILLI,
+          WAIT_COUNT waits,
+          round(decode(WAIT_TIME_MILLI,1,0.5,0.75)*
+            WAIT_TIME_MILLI*WAIT_COUNT/1000) time_waited_sec
+        from
+          DBA_HIST_EVENT_HISTOGRAM
+        where
+          event_name in ('Disk file operations I/O' )
+      ) e,
+      (
+        select
+          dbid,
+          instance_number,
+          snap_id,
+          startup_time,
+          begin_interval_time,
+          end_interval_time
+        from
+          dba_hist_snapshot
+        where
+          snap_id >
+          (
+            select
+              min(snap_id) snap_id
+            from
+              dba_hist_snapshot
+            where
+              end_interval_time between
+                to_timestamp(rpad('1980-01-01 00:00',
+                  19,':00'),'yyyy-mm-dd hh24:mi:ss') and
+                to_timestamp(rpad('9999-12-31 00:00',
+                  19,':00'),'yyyy-mm-dd hh24:mi:ss')
+          )
+        union all
+        (
+          select
+            dbid,
+            instance_number,
+            snap_id,
+            startup_time,
+            null,
+            null
+          from
+            dba_hist_snapshot
+          where
+            snap_id in
+            (
+              select
+                min(snap_id) snap_id
+              from
+                dba_hist_snapshot
+              where
+                end_interval_time between
+                  to_timestamp(rpad('1980-01-01 00:00',
+                    19,':00'),'yyyy-mm-dd hh24:mi:ss') and
+                  to_timestamp(rpad('9999-12-31 00:00',
+                    19,':00'),'yyyy-mm-dd hh24:mi:ss')
+            )
+        )
+      ) s
+      where
+        e.dbid = s.dbid and
+        e.instance_number = s.instance_number and
+        e.snap_id = s.snap_id
+  ) q
+  where
+    begin_interval_time is not null and 
+    end_interval_time <= to_timestamp(rpad('9999-12-31 00:00',
+      19,':00'),'yyyy-mm-dd hh24:mi:ss')
+  order by
+    dbid,
+    inst_id,
+    snap_id,
+    event_name,
+    wait_time_milli;
+

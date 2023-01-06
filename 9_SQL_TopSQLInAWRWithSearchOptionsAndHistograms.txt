@@ -1,0 +1,601 @@
+WITH BASIS_INFO AS
+( SELECT /*+ MATERIALIZE */
+    DECODE(DBID, -1, OWN_DBID, DBID) DBID,
+    DECODE(INSTANCE_NUMBER, -1, USERENV('INSTANCE'), INSTANCE_NUMBER) INSTANCE_NUMBER,
+    BEGIN_DATE,
+    END_DATE,
+    TO_TIMESTAMP(TO_CHAR(BEGIN_DATE, 'dd.mm.yyyy hh24:mi:ss'), 'dd.mm.yyyy hh24:mi:ss') BEGIN_TIME,
+    TO_TIMESTAMP(TO_CHAR(END_DATE, 'dd.mm.yyyy hh24:mi:ss'), 'dd.mm.yyyy hh24:mi:ss') END_TIME,
+    BEGIN_SNAP_ID,
+    END_SNAP_ID,
+    SORTING_BY,
+    SQL_PATTERN,
+    NUM_RECORDS,
+    TABLE_NAME,
+    MODULE,
+    SQL_TYPE,
+    SHORT_SQL_TEXT
+  FROM
+  ( SELECT
+      -1 DBID,
+      -2 INSTANCE_NUMBER,
+        /* -1 for current instance, -2 for all instances */
+      TO_DATE(rpad('1980-01-01 00:00',
+        19,':00'),'YYYY-MM-DD HH24:MI:SS') BEGIN_DATE,
+      TO_DATE(rpad('9999-12-31 00:00',
+        19,':00'),'YYYY-MM-DD HH24:MI:SS') END_DATE,
+      -1 BEGIN_SNAP_ID,
+      -1 END_SNAP_ID,
+      'Elapsed Time' SORTING_BY,/* 'Elapsed Time', 'Executions', 'Records', 'Disk Reads', 'I/O Time (s)'
+           'Buffer Gets', 'CPU Time', 'Direct Writes' 'Cluster Time' */
+      '%' SQL_PATTERN,
+      '%' TABLE_NAME,
+      '%' MODULE,
+      '%' SQL_TYPE,/* 'DML', 'INSERT+UPDATE' or individual SQL type like 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'ALTER INDEX' */
+      300 NUM_RECORDS,
+      ' ' SHORT_SQL_TEXT
+    FROM
+      DUAL
+  ),
+  ( SELECT DBID OWN_DBID FROM V$DATABASE )
+),
+SNAPSHOTS AS
+( SELECT /*+ MATERIALIZE */
+    SS.DBID,
+    SS.INSTANCE_NUMBER,
+    MIN(SS.SNAP_ID) BEGIN_SNAP_ID,
+    MIN(SS.BEGIN_INTERVAL_TIME) BEGIN_TIME,
+    MAX(SS.SNAP_ID) END_SNAP_ID,
+    MAX(SS.END_INTERVAL_TIME) END_TIME,
+    SUM(TO_CHAR(SS.END_INTERVAL_TIME, 'SSSSS') -
+      TO_CHAR(SS.BEGIN_INTERVAL_TIME, 'SSSSS') +
+      86400 * (TO_CHAR(SS.END_INTERVAL_TIME, 'J') -
+               TO_CHAR(SS.BEGIN_INTERVAL_TIME, 'J')))
+      SECONDS
+  FROM
+    DBA_HIST_SNAPSHOT SS,
+    BASIS_INFO BI
+  WHERE
+    BI.DBID = SS.DBID AND
+    ( BI.INSTANCE_NUMBER = -2 OR
+    BI.INSTANCE_NUMBER = SS.INSTANCE_NUMBER
+    ) AND
+    SS.BEGIN_INTERVAL_TIME >= BI.BEGIN_TIME AND
+    SS.END_INTERVAL_TIME <= BI.END_TIME
+  GROUP BY
+    SS.DBID,
+    SS.INSTANCE_NUMBER
+),
+SQL_STATEMENTS AS
+( SELECT
+    SQ.*
+  FROM
+  ( SELECT
+      HSQ.SQL_ID SQL_ID,
+      COUNT(DISTINCT(HSQ.PLAN_HASH_VALUE)) NUM_PLANS,
+      SUM(HSQ.EXECUTIONS_DELTA) EXECUTIONS,
+      SUM(HSQ.ROWS_PROCESSED_DELTA) ROWS_PROCESSED,
+      SUM(HSQ.DISK_READS_DELTA) DISK_READS,
+      SUM(HSQ.BUFFER_GETS_DELTA) BUFFER_GETS,
+      SUM(HSQ.CPU_TIME_DELTA) CPU_TIME_MICRO,
+      SUM(HSQ.ELAPSED_TIME_DELTA) ELA_TIME_MICRO,
+      DECODE(SS.SECONDS, 0, 0, SUM(HSQ.ELAPSED_TIME_DELTA) /
+        1000000 / SS.SECONDS) ACTIVE_SESSIONS,
+      SUM(HSQ.DIRECT_WRITES_DELTA) DIRECT_WRITES,
+      SUM(HSQ.CLWAIT_DELTA) CLUSTER_TIME_MICRO,
+      MIN(HSQ.MODULE) MODULE,
+      MIN(HSQ.PARSING_SCHEMA_NAME) PARSING_SCHEMA_NAME,
+      AVG(SQS.AVG_HARD_PARSE_TIME) AVG_HARD_PARSE_TIME_MICRO,
+      MAX(SC.COMMAND_NAME) COMMAND_TYPE,
+      TRANSLATE(MIN(TO_CHAR(SUBSTR(HST.SQL_TEXT, 1, 2000))),
+        CHR(10), ' ') SQL_TEXT,
+      MAX(TO_CHAR(SQS.LAST_ACTIVE_TIME,'YYYY-MM-DD HH:MI')) LAST_ACTIVE_TIME
+    FROM
+      DBA_HIST_SQLSTAT HSQ,
+      DBA_HIST_SQLTEXT HST,
+      V$SQLSTATS SQS,
+      V$SQLCOMMAND SC,
+      SNAPSHOTS SS,
+      BASIS_INFO BI
+    WHERE
+      SS.DBID = HSQ.DBID AND
+      HST.DBID (+) = HSQ.DBID AND
+      SS.INSTANCE_NUMBER = HSQ.INSTANCE_NUMBER AND
+      HST.SQL_ID (+) = HSQ.SQL_ID AND
+      SQS.SQL_ID (+) = HSQ.SQL_ID AND
+      HSQ.SNAP_ID BETWEEN SS.BEGIN_SNAP_ID AND SS.END_SNAP_ID AND
+      HST.COMMAND_TYPE = SC.COMMAND_TYPE (+) AND
+      ( BI.SQL_TYPE = '%' OR
+        BI.SQL_TYPE = 'DML' AND SC.COMMAND_NAME IN ('INSERT', 'UPDATE', 'DELETE') OR
+        BI.SQL_TYPE = 'INSERT+UPDATE' AND SC.COMMAND_NAME IN ('INSERT', 'UPDATE') OR
+        BI.SQL_TYPE = SC.COMMAND_NAME )
+    GROUP BY
+      HSQ.SQL_ID,
+      BI.SORTING_BY,
+      SS.SECONDS
+    ORDER BY
+      DECODE( BI.SORTING_BY,
+        'Elapsed Time',  ELA_TIME_MICRO,
+        'Executions',    EXECUTIONS,
+        'Records',       ROWS_PROCESSED,
+        'Disk Reads',    DISK_READS,
+        'Buffer Gets',   BUFFER_GETS,
+        'CPU Time',      CPU_TIME_MICRO,
+        'Direct Writes', DIRECT_WRITES,
+        'Cluster Time',  CLUSTER_TIME_MICRO ) DESC
+  ) SQ,
+    BASIS_INFO BI
+  WHERE
+    SQ.SQL_TEXT LIKE BI.SQL_PATTERN AND
+    ( BI.MODULE = '%' OR SQ.MODULE LIKE BI.MODULE )
+),
+TABLE_INFO AS
+( SELECT DISTINCT
+    TI.SQL_ID SQL_ID,
+    LISTAGG(TI.TABLE_NAME, ' ') WITHIN GROUP (ORDER BY TI.TABLE_NAME) OVER
+      (PARTITION BY TI.SQL_ID) TABLES
+  FROM
+    SQL_STATEMENTS SQ,
+  ( SELECT
+      SQ.SQL_ID SQL_ID,
+      SP.OBJECT_OWNER TABLE_OWNER,
+      SP.OBJECT_NAME TABLE_NAME
+    FROM
+      SQL_STATEMENTS SQ,
+      DBA_HIST_SQL_PLAN SP,
+      BASIS_INFO BI
+    WHERE
+      SQ.SQL_ID = SP.SQL_ID AND
+      ( SP.OBJECT_TYPE LIKE '%TABLE%' OR SP.OPERATION = 'DELETE' )
+    UNION
+    ( SELECT
+        SQ.SQL_ID SQL_ID,
+        I.TABLE_OWNER TABLE_OWNER,
+        I.TABLE_NAME TABLE_NAME
+      FROM
+        SQL_STATEMENTS SQ,
+        DBA_HIST_SQL_PLAN SP,
+        DBA_INDEXES I,
+        BASIS_INFO BI
+      WHERE
+        SP.OBJECT_OWNER = I.OWNER AND
+        SP.OBJECT_NAME = I.INDEX_NAME AND
+        SP.OBJECT_TYPE LIKE '%INDEX%' AND
+        SQ.SQL_ID = SP.SQL_ID
+    )
+    UNION
+    ( SELECT
+        SQ.SQL_ID SQL_ID,
+        SQ.PARSING_SCHEMA_NAME TABLE_OWNER,
+        REGEXP_REPLACE(SQ.SQL_TEXT, 'INSERT INTO[ "]+([^ "]+)[ "]+.*',
+          '\1', 1, 1, 'i') TABLE_NAME
+        FROM
+          SQL_STATEMENTS SQ
+    )
+    UNION
+    ( SELECT
+        SQ.SQL_ID SQL_ID,
+        REGEXP_REPLACE(SQ.SQL_TEXT,
+          'BEGIN DBMS_STATS.*OWNNAME => [' || CHR(39) || '"]+([^' || CHR(39) || '"]+)[' || CHR(39) || '"]+.*',
+          '\1', 1, 1, 'i') TABLE_OWNER,
+        REGEXP_REPLACE(SQ.SQL_TEXT,
+          'BEGIN DBMS_STATS.*TABNAME => [' || CHR(39) || '"]+([^' || CHR(39) || '"]+)[' || CHR(39) || '"]+.*',
+          '\1', 1, 1, 'i') TABLE_NAME
+      FROM
+        SQL_STATEMENTS SQ
+    )
+  ) TI
+  WHERE
+    SQ.SQL_ID = TI.SQL_ID AND
+    TI.TABLE_NAME != SQ.SQL_TEXT
+),
+original_merge as
+(
+  select
+    rownum sort_nr,
+    t.*
+  from
+  (  
+    SELECT    
+      TO_CHAR(BEGIN_TIME, 'dd.mm.yyyy') SQL_ID,
+      NULL ACT_SESS,
+      TO_CHAR(END_TIME, 'dd.mm.yyyy') LAST_ACTIVE_TIME,
+      NULL EXECUTIONS,
+      '  -'  NUM_PLANS,
+      NULL ELA_TIME_MS,
+      NULL ELA_MS_PER_EXEC,
+      NULL CPU_TIME_MS,
+      NULL CPU_MS_PER_EXEC,
+      NULL ROWS_PROC,
+      NULL ROWS_PER_EXEC,
+      NULL DISK_READS,
+      NULL READS_PER_EXEC,
+      NULL BUFFER_GETS,
+      NULL GETS_PER_EXEC,
+      NULL GETS_PER_ROW,
+      NULL DIRECT_WRITES,
+      NULL CL_TIME_MS,
+      NULL CL_MS_PER_EXEC,
+      NULL AVG_PARSE_MS,
+      NULL MODULE,
+      NULL TABLES,
+      NULL SQL_TEXT
+    FROM
+      SNAPSHOTS
+    WHERE 
+      rownum < 2
+    UNION ALL
+    ( SELECT
+        TO_CHAR(BEGIN_TIME, 'hh24:mi:ss') SQL_ID,
+        NULL ACT_SESS,
+        TO_CHAR(END_TIME, 'hh24:mi:ss') LAST_ACTIVE_TIME,
+        NULL EXECUTIONS,
+        '  -'  NUM_PLANS,
+        NULL ELA_TIME_MS,
+        NULL ELA_MS_PER_EXEC,
+        NULL CPU_TIME_MS,
+        NULL CPU_MS_PER_EXEC,
+        NULL ROWS_PROC,
+        NULL ROWS_PER_EXEC,
+        NULL DISK_READS,
+        NULL READS_PER_EXEC,
+        NULL BUFFER_GETS,
+        NULL GETS_PER_EXEC,
+        NULL GETS_PER_ROW,
+        NULL DIRECT_WRITES,
+        NULL CL_TIME_MS,
+        NULL CL_MS_PER_EXEC,
+        NULL AVG_PARSE_MS,
+        NULL MODULE,
+        NULL TABLES,
+        NULL SQL_TEXT
+      FROM
+        SNAPSHOTS
+      WHERE 
+        rownum < 2
+    )
+    UNION ALL
+    ( SELECT
+        'INSTANCE'  SQL_ID,
+        NULL ACT_SESS,
+        DECODE(INSTANCE_NUMBER, -2, 'ALL', TO_CHAR(INSTANCE_NUMBER)) LAST_ACTIVE_TIME,
+        NULL EXECUTIONS,
+        '  -' NUM_PLANS,
+        NULL ELA_TIME_MS,
+        NULL ELA_MS_PER_EXEC,
+        NULL CPU_TIME_MS,
+        NULL CPU_MS_PER_EXEC,
+        NULL ROWS_PROC,
+        NULL ROWS_PER_EXEC,
+        NULL DISK_READS,
+        NULL READS_PER_EXEC,
+        NULL BUFFER_GETS,
+        NULL GETS_PER_EXEC,
+        NULL GETS_PER_ROW,
+        NULL DIRECT_WRITES,
+        NULL CL_TIME_MS,
+        NULL CL_MS_PER_EXEC,
+        NULL AVG_PARSE_MS,
+        NULL MODULE,
+        NULL TABLES,
+        NULL SQL_TEXT
+      FROM
+        BASIS_INFO
+    )
+    UNION ALL
+    ( SELECT
+        NULL SQL_ID,
+        NULL ACT_SESS,
+        NULL LAST_ACTIVE_TIME,
+        NULL EXECUTIONS,
+        NULL NUM_PLANS,
+        NULL ELA_TIME_MS,
+        NULL ELA_MS_PER_EXEC,
+        NULL CPU_TIME_MS,
+        NULL CPU_MS_PER_EXEC,
+        NULL ROWS_PROC,
+        NULL ROWS_PER_EXEC,
+        NULL DISK_READS,
+        NULL READS_PER_EXEC,
+        NULL BUFFER_GETS,
+        NULL GETS_PER_EXEC,
+        NULL GETS_PER_ROW,
+        NULL DIRECT_WRITES,
+        NULL CL_TIME_MS,
+        NULL CL_MS_PER_EXEC,
+        NULL AVG_PARSE_MS,
+        NULL MODULE,
+        NULL TABLES,
+        NULL SQL_TEXT
+      FROM
+        DUAL
+    )
+    UNION ALL
+    ( SELECT
+        SQL_ID,
+        ACT_SESS,
+        LAST_ACTIVE_TIME,
+        EXECUTIONS,
+        NUM_PLANS NUM_PLANS,
+        ELA_TIME_MS,
+        ELA_MS_PER_EXEC,
+        CPU_TIME_MS,
+        CPU_MS_PER_EXEC,
+        ROWS_PROC,
+        ROWS_PER_EXEC,
+        DISK_READS,
+        READS_PER_EXEC,
+        BUFFER_GETS,
+        GETS_PER_EXEC,
+        GETS_PER_ROW,
+        DIRECT_WRITES,
+        CL_TIME_MS,
+        CL_MS_PER_EXEC,
+        AVG_PARSE_MS,
+        MODULE,
+        SUBSTR(TABLES, 1, 200) TABLES,
+        SUBSTR(SQL_TEXT, 1, 200) SQL_TEXT
+      FROM
+      ( SELECT
+          SQL_ID,
+          TO_CHAR(NUM_PLANS, 9990) NUM_PLANS,
+          TO_CHAR(EXECUTIONS, 9999999990) EXECUTIONS,
+          TO_CHAR(ROWS_PROCESSED, 999999999990) ROWS_PROC,
+          TO_CHAR(DECODE(EXECUTIONS, 0, 0, ROWS_PROCESSED / EXECUTIONS),
+            999999990.99) ROWS_PER_EXEC,
+          TO_CHAR(DISK_READS, 99999999990) DISK_READS,
+          TO_CHAR(DECODE(EXECUTIONS, 0, 0, DISK_READS / EXECUTIONS),
+            9999999990.99) READS_PER_EXEC,
+          TO_CHAR(BUFFER_GETS, 999999999990) BUFFER_GETS,
+          TO_CHAR(DECODE(EXECUTIONS, 0, 0, BUFFER_GETS / EXECUTIONS),
+            9999999990.99) GETS_PER_EXEC,
+          TO_CHAR(DECODE(ROWS_PROCESSED, 0, 0, BUFFER_GETS / ROWS_PROCESSED),
+            99999990.99) GETS_PER_ROW,
+          TO_CHAR(CPU_TIME_MICRO / 1000, 9999999990) CPU_TIME_MS,
+          TO_CHAR(DECODE(EXECUTIONS, 0, 0, CPU_TIME_MICRO / EXECUTIONS) /
+            1000, 99999999990.99) CPU_MS_PER_EXEC,
+          TO_CHAR(ACTIVE_SESSIONS, 9990.99) ACT_SESS,
+          TO_CHAR(ELA_TIME_MICRO / 1000, 99999999990) ELA_TIME_MS,
+          TO_CHAR(DECODE(EXECUTIONS, 0, 0, ELA_TIME_MICRO / EXECUTIONS) /
+            1000, 99999999990.99) ELA_MS_PER_EXEC,
+          TO_CHAR(DIRECT_WRITES, 999999999990) DIRECT_WRITES,
+          TO_CHAR(CLUSTER_TIME_MICRO / 1000, 999999990) CL_TIME_MS,
+          TO_CHAR(DECODE(EXECUTIONS, 0, 0, CLUSTER_TIME_MICRO / EXECUTIONS) /
+            1000, 9999999990.99) CL_MS_PER_EXEC,
+          TO_CHAR(AVG_HARD_PARSE_TIME_MICRO / 1000, 99999990.99) AVG_PARSE_MS,
+          NVL(LAST_ACTIVE_TIME,'Not in SQL Cache') LAST_ACTIVE_TIME,
+          MODULE,
+          TABLES,
+          DECODE(SHORT_SQL_TEXT, 'X',
+            DECODE(WORD_1,
+              'CREATE', WORD_1 || ' ' || WORD_2 || DECODE(WORD_2,
+                'BITMAP', ' ' || WORD_3, 'UNIQUE', ' ' || WORD_3),
+              'LOCK', WORD_1 || ' ' || WORD_2,
+              'ALTER', WORD_1 || ' ' || WORD_2,
+              'BEGIN', DECODE(WORD_2, 'SYS', WORD_4, WORD_2),
+              '/*', WORD_4 || ' ' || WORD_5,
+              'MERGE/*' || '+', 'MERGE',
+              'CALL', WORD_2,
+              WORD_1),
+            SQL_TEXT)  SQL_TEXT,
+          NUM_RECORDS,
+          SORTING_BY
+        FROM
+        ( SELECT
+            SQ.SQL_ID,
+            SQ.NUM_PLANS,
+            SQ.EXECUTIONS,
+            SQ.ROWS_PROCESSED,
+            SQ.DISK_READS,
+            SQ.BUFFER_GETS,
+            SQ.CPU_TIME_MICRO,
+            SQ.ELA_TIME_MICRO,
+            SQ.ACTIVE_SESSIONS,
+            SQ.DIRECT_WRITES,
+            SQ.CLUSTER_TIME_MICRO,
+            SQ.MODULE,
+            SQ.AVG_HARD_PARSE_TIME_MICRO,
+            SQ.LAST_ACTIVE_TIME,
+            TI.TABLES,
+            REGEXP_REPLACE(UPPER(SQL_TEXT), ' *([^ (]+) *.*', '\1',
+              1, 1, 'i') WORD_1,
+            REGEXP_REPLACE(UPPER(SQL_TEXT), ' *[^ (]+[ (]+([^ (]+) *.*', '\1',
+              1, 1, 'i') WORD_2,
+            REGEXP_REPLACE(UPPER(SQL_TEXT),
+              ' *[^ (]+[ (]+[^ (]+[ (]+([^ (]+) *.*', '\1',
+              1, 1, 'i') WORD_3,
+            REGEXP_REPLACE(UPPER(SQL_TEXT),
+              ' *[^ (]+[ (]+[^ (]+[ (]+[^ (]+[ (]+([^ (]+) *.*', '\1',
+              1, 1, 'i') WORD_4,
+            REGEXP_REPLACE(UPPER(SQL_TEXT),
+              ' *[^ (]+[ (]+[^ (]+[ (]+[^ (]+[ (]+[^ (]+[ (]+([^ (]+) *.*',
+              '\1', 1, 1, 'i') WORD_5,
+            SQ.SQL_TEXT,
+            BI.NUM_RECORDS,
+            BI.SORTING_BY,
+            BI.SHORT_SQL_TEXT
+          FROM
+            SQL_STATEMENTS SQ,
+            TABLE_INFO TI,
+            BASIS_INFO BI
+          WHERE
+            SQ.SQL_ID = TI.SQL_ID (+) AND
+            ( BI.TABLE_NAME = '%' OR
+              INSTR(' ' || TI.TABLES || ' ', ' ' || BI.TABLE_NAME || ' ') > 0
+            )
+        )
+        ORDER BY
+          DECODE ( SORTING_BY,
+            'Elapsed Time',  ELA_TIME_MICRO,
+            'Executions',    EXECUTIONS,
+            'Records',       ROWS_PROCESSED,
+            'Disk Reads',    DISK_READS,
+            'Buffer Gets',   BUFFER_GETS,
+            'CPU Time',      CPU_TIME_MICRO,
+            'Direct Writes', DIRECT_WRITES,
+            'Cluster Time',  CLUSTER_TIME_MICRO ) DESC
+      )
+      WHERE
+        (NUM_RECORDS = -1 OR ROWNUM <= NUM_RECORDS)
+    ) 
+  ) t
+),
+kpis as
+(  
+  select 
+    sql_id,
+    agg_type,
+    agg_slot,
+    ratio_to_report(kpi) over(partition by sql_id, agg_type)*100 pct
+  from
+  (
+    select 
+      hsq.sql_id,
+      g.agg_type,
+      case g.agg_type
+        when 1 then to_number(to_char(ss.begin_interval_time,'hh24'))
+        when 2 then mod(to_char(ss.begin_interval_time,'D')+5,7)
+        when 3 then to_date(to_char(ss.begin_interval_time,'yyyy-mm-dd'),'yyyy-mm-dd')-
+                    to_date(to_char(sysdate,'yyyy-mm-dd'),'yyyy-mm-dd')                    
+      end agg_slot,
+      sum(hsq.elapsed_time_delta) kpi
+    from
+      dba_hist_snapshot ss,
+      dba_hist_sqlstat hsq,
+      (select rownum agg_type from dual connect by level <=3) g,
+      basis_info bi    
+    where
+      hsq.dbid=bi.dbid and
+      ( hsq.instance_number = bi.instance_number or bi.instance_number=-2) and
+      hsq.snap_id between bi.begin_snap_id and decode(bi.end_snap_id,-1,999999999999,bi.end_snap_id) and
+      ss.begin_interval_time >= bi.begin_time and
+      ss.end_interval_time <= bi.end_time and
+      hsq.snap_id=ss.snap_id and      
+      hsq.sql_id in (select sql_id from original_merge)
+    group by
+      hsq.sql_id,
+      g.agg_type,
+      case g.agg_type
+        when 1 then to_number(to_char(ss.begin_interval_time,'hh24'))
+        when 2 then mod(to_char(ss.begin_interval_time,'D')+5,7)
+        when 3 then to_date(to_char(ss.begin_interval_time,'yyyy-mm-dd'),'yyyy-mm-dd')-
+                    to_date(to_char(sysdate,'yyyy-mm-dd'),'yyyy-mm-dd')
+      end
+  )
+),
+slots as
+(  
+  select distinct 
+    k.sql_id,
+    s.agg_type,
+    s.agg_slot    
+  from
+  (
+     select 1 agg_type, rownum-1 agg_slot from dual connect by level <=24 union all 
+    (select 2, rownum-1 from dual connect by level <=7) union all
+    (select 3, rownum-42 from dual connect by level <=42)
+  ) s,
+  kpis k
+),
+slot_kpis_raw as
+(
+  select
+    s.sql_id,
+    s.agg_type,
+    s.agg_slot,
+    decode(round(k.pct/10),null,'.',10,'*',to_char(round(k.pct/10))) pct_number
+  from
+    slots s left outer join
+    kpis k on
+      s.sql_id=k.sql_id and
+      s.agg_type=k.agg_type and
+      s.agg_slot=k.agg_slot 
+),
+histogram_merge as
+(
+  select
+    sql_id,
+    substr(pct,1,8)||' '||substr(pct,9,8)||' '||substr(pct,17,8) Hour_of_Day_Histogram,
+    substr(pct,25,5)||' '||substr(pct,30,2) DoW_Hist,
+    substr(pct,32+offset,7)||' '||substr(pct,39+offset,7)||' '||substr(pct,46+offset,7)||' '||
+    substr(pct,53+offset,7)||' '||substr(pct,60+offset,7)||' '||substr(pct,67+offset) Past_Days_Histogram
+  from
+  (
+    select
+      sql_id,
+      listagg(pct) within group (order by agg_type) pct 
+    from
+    (
+      select
+        sql_id,
+        agg_type,
+        listagg(pct_number) within group (order by agg_slot) pct      
+      from
+        slot_kpis_raw
+      group by
+        sql_id,
+        agg_type
+    )
+    group by
+      sql_id
+  ),
+  (select mod(8-to_char(sysdate,'D'),7) offset from dual)
+),
+past_days_headline as
+(
+  select
+    replace(trim(substr(
+      listagg(substr(to_char(sysdate-(level-1),'dd'),1,1)||decode(to_char(sysdate-(level-1),'d'),1,' '),'') within group (order by sysdate-(level-1)*3-2),
+      10-to_char(sysdate,'d')-decode(to_char(sysdate,'d'),'1',8,0),
+      39+to_char(sysdate,'d')+decode(to_char(sysdate,'d'),'1',8,0))),'0',' ') day_10_digit,
+    trim(substr(
+      listagg(substr(to_char(sysdate-(level-1),'dd'),2,1)||decode(to_char(sysdate-(level-1),'d'),1,' '),'') within group (order by sysdate-(level-1)*3-2),
+      10-to_char(sysdate,'d')-decode(to_char(sysdate,'d'),'1',8,0),
+      39+to_char(sysdate,'d')+decode(to_char(sysdate,'d'),'1',8,0))) day_1_digit
+  from 
+    dual
+  connect by 
+    level <= 42  
+)
+select
+  o.SQL_ID,
+  o.NUM_PLANS plans,
+  o.LAST_ACTIVE_TIME,
+  decode(o.sort_nr,
+    2, '           111111 11112222',
+    3, '01234567 89012345 67890123',
+    h.Hour_of_Day_Histogram) Hour_of_Day_Histogram,
+  decode(o.sort_nr,
+    2, 'MTWTF SS',
+    3, 'OUEHR AU',
+    h.DoW_Hist) DoW_Hist,
+  decode(o.sort_nr,
+    2, (select day_10_digit from past_days_headline),
+    3, (select day_1_digit from past_days_headline),
+    h.Past_Days_Histogram) Past_Days_Histogram,
+  o.ACT_SESS,
+  o.ELA_TIME_MS,
+  o.ELA_MS_PER_EXEC,
+  o.ROWS_PER_EXEC,
+  o.GETS_PER_ROW,
+  o.GETS_PER_EXEC,
+  o.EXECUTIONS,
+  o.ROWS_PROC,
+  o.BUFFER_GETS,
+  o.DISK_READS,
+  o.READS_PER_EXEC,
+  o.CPU_TIME_MS,
+  o.CPU_MS_PER_EXEC,
+  o.CL_TIME_MS,
+  o.CL_MS_PER_EXEC,
+  o.DIRECT_WRITES,
+  o.AVG_PARSE_MS,
+  o.MODULE,
+  o.TABLES,
+  o.SQL_TEXT
+from
+  original_merge o left outer join
+  histogram_merge h on
+    o.sql_id=h.sql_id
+ORDER BY
+  o.sort_nr

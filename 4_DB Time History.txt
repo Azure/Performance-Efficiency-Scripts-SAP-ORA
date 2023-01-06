@@ -1,0 +1,632 @@
+SELECT
+  NULL date_time,
+  NULL week,
+  NULL day,
+  NULL date_,
+  NULL time,
+  NULL hour,
+  NULL event,
+  NULL waited_seconds,
+  NULL waited_minutes,
+  NULL waited_hours,
+  NULL active_sessions,
+  NULL waits,
+  NULL avg_ms,
+  NULL inst_id,
+  NULL object_names
+FROM DUAL WHERE 1 = 0
+UNION ALL (
+SELECT
+  NULL date_time,
+  NULL week,
+  NULL day,
+  NULL date_,
+  NULL time,
+  NULL hour,
+  NULL event,
+  NULL waits,
+  NULL waited_seconds,
+  NULL waited_minutes,
+  NULL waited_hours,
+  NULL active_sessions,
+  NULL avg_ms,
+  NULL inst_id,
+  NULL object_names
+FROM DUAL WHERE 1 = 0
+) UNION ALL ( SELECT * FROM (
+WITH BASIS_INFO AS
+( SELECT /*+ MATERIALIZE */
+    DECODE(DBID, -1, OWN_DBID, DBID) DBID,
+    DECODE(INSTANCE_NUMBER, -1, USERENV('INSTANCE'), INSTANCE_NUMBER) INSTANCE_NUMBER,
+    BEGIN_DATE,
+    END_DATE,
+    TO_TIMESTAMP(TO_CHAR(BEGIN_DATE, 'dd.mm.yyyy hh24:mi:ss'),
+      'dd.mm.yyyy hh24:mi:ss') BEGIN_TIME,
+    TO_TIMESTAMP(TO_CHAR(END_DATE, 'dd.mm.yyyy hh24:mi:ss'),
+      'dd.mm.yyyy hh24:mi:ss') END_TIME,
+    RTT_MICRO,
+    MIN_AVG_DIRECT_PATH_TIME_MS,
+    DECODE(AGGREGATE_BY,
+      'SNAPSHOT',    'YYYY-MM-DD HH24:MI:SS',
+      'DAY',         'YYYY-MM-DD (DY)',
+      'HOUR_OF_DAY', 'HH24',
+      AGGREGATE_BY ) AGGREGATE_BY,
+    CONSIDER_TIMEOUTS,
+    EXCLUDE_WEEKENDS,
+    EXCLUDE_SYSTEM,
+    EXCLUDE_ADMINISTRATIVE,
+    MIN_TIME_WAITED_S,
+    min_object_percentage/100 min_object_percentage,
+    ','||show_always_events||',' show_always_events,
+    min_event_percentage
+  FROM
+  ( SELECT
+      to_number(nvl('-1','-1')) DBID,
+      to_number(nvl('-3','-3')) INSTANCE_NUMBER,
+        /* -1: current instance, -2: all instances aggregated, -3: all instances individually */
+      TO_DATE(rpad('1980-01-01 00:00',
+        19,':00'),'YYYY-MM-DD HH24:MI:SS') BEGIN_DATE,
+      TO_DATE(rpad('9999-12-31 00:00',
+        19,':00'),'YYYY-MM-DD HH24:MI:SS') END_DATE,
+      to_number(nvl('400','400')) RTT_MICRO,
+        /* replace with average round trip time in us */
+      to_number(nvl('1','1')) MIN_AVG_DIRECT_PATH_TIME_MS,
+      decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') CONSIDER_TIMEOUTS,
+      decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') EXCLUDE_SYSTEM,
+      decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') EXCLUDE_ADMINISTRATIVE,
+      decode(upper(substr('N',1,1)),'Y','X','X','X',' ') EXCLUDE_WEEKENDS,
+      nvl('YYYY-MM-DD  HH24','YYYY-MM-DD  HH24') AGGREGATE_BY,
+        /* SNAPSHOT, DAY, HOUR_OF_DAY or Oracle time pattern */
+      to_number(nvl('600','600')) MIN_TIME_WAITED_S,
+      to_number(nvl('5',5)) min_event_percentage,
+      'log file sync,db file sequential read' show_always_events,
+      to_number(nvl('5',5)) min_object_percentage
+    FROM
+      DUAL
+  ),
+  ( SELECT DBID OWN_DBID FROM V$DATABASE )
+),
+SNAPSHOTS AS
+( SELECT /*+ MATERIALIZE */
+    DBID,
+    INSTANCE_NUMBER,
+    SNAP_ID,
+    PREV_SNAP_ID,
+    MIN_SNAP_ID,
+    BEGIN_INTERVAL_TIME,
+    END_INTERVAL_TIME,
+    INTERVAL_SECONDS,
+    RESTART
+  FROM
+  ( SELECT
+      HSS2.DBID,
+      HSS2.INSTANCE_NUMBER,
+      HSS2.SNAP_ID,
+      HSS1.SNAP_ID PREV_SNAP_ID,
+      FIRST_VALUE(HSS2.SNAP_ID) OVER (ORDER BY HSS2.SNAP_ID) MIN_SNAP_ID,
+      HSS2.BEGIN_INTERVAL_TIME,
+      HSS2.END_INTERVAL_TIME,
+      TO_CHAR(HSS2.END_INTERVAL_TIME, 'SSSSS') -
+        TO_CHAR(HSS2.BEGIN_INTERVAL_TIME, 'SSSSS') +
+        86400 * (TO_CHAR(HSS2.END_INTERVAL_TIME, 'J') -
+                 TO_CHAR(HSS2.BEGIN_INTERVAL_TIME, 'J'))
+        INTERVAL_SECONDS,
+      DECODE(HSS2.STARTUP_TIME, HSS1.STARTUP_TIME, 'NO', 'YES') RESTART
+    FROM
+      BASIS_INFO BI,
+      DBA_HIST_SNAPSHOT HSS1,
+      DBA_HIST_SNAPSHOT HSS2
+    WHERE
+      HSS2.DBID = BI.DBID AND
+      HSS1.DBID (+) = HSS2.DBID AND
+      ( BI.INSTANCE_NUMBER = -2 OR
+        BI.INSTANCE_NUMBER = -3 OR
+        HSS2.INSTANCE_NUMBER = BI.INSTANCE_NUMBER
+      ) AND
+      HSS1.INSTANCE_NUMBER (+) = HSS2.INSTANCE_NUMBER AND
+      HSS2.END_INTERVAL_TIME BETWEEN BI.BEGIN_TIME AND BI.END_TIME AND
+      HSS1.SNAP_ID (+) = HSS2.SNAP_ID - 1
+    ORDER BY
+      HSS2.SNAP_ID
+  )
+),
+TIMED_EVENTS_PER_SNAPSHOT AS
+( SELECT /*+ MATERIALIZE */
+    SNAP_ID,
+    BEGIN_INTERVAL_TIME,
+    END_INTERVAL_TIME,
+    INSTANCE_NUMBER,
+    INTERVAL_SECONDS,
+    EVENT_NAME,
+    TOTAL_WAITS - DECODE(CONSIDER_TIMEOUTS, 'X', TOTAL_TIMEOUTS, 0) TOTAL_WAITS,
+    TOTAL_TIMEOUTS,
+    GREATEST(DECODE(SUBSTR(EVENT_NAME, 1, 6), 'direct',
+      MIN_AVG_DIRECT_PATH_TIME_MS * 1000 * TOTAL_WAITS, 0),
+      TIME_WAITED_MICRO) TIME_WAITED_MICRO
+  FROM
+  ( SELECT
+      SS.SNAP_ID,
+      SS.BEGIN_INTERVAL_TIME,
+      SS.END_INTERVAL_TIME,
+      SS.INSTANCE_NUMBER,
+      SS.INTERVAL_SECONDS,
+      HSE2.EVENT_NAME,
+      DECODE(SS.RESTART, 'NO', HSE2.TOTAL_WAITS - NVL(HSE1.TOTAL_WAITS, 0),
+        HSE2.TOTAL_WAITS) TOTAL_WAITS,
+      DECODE(SS.RESTART, 'NO', HSE2.TOTAL_TIMEOUTS - NVL(HSE1.TOTAL_TIMEOUTS, 0),
+        HSE2.TOTAL_TIMEOUTS) TOTAL_TIMEOUTS,
+      DECODE(SS.RESTART, 'NO', HSE2.TIME_WAITED_MICRO -
+        NVL(HSE1.TIME_WAITED_MICRO, 0), HSE2.TIME_WAITED_MICRO) TIME_WAITED_MICRO,
+      BI.MIN_AVG_DIRECT_PATH_TIME_MS,
+      BI.CONSIDER_TIMEOUTS
+    FROM
+      BASIS_INFO BI,
+      SNAPSHOTS SS,
+      DBA_HIST_SYSTEM_EVENT HSE1,
+      DBA_HIST_SYSTEM_EVENT HSE2
+    WHERE
+      SS.DBID = HSE2.DBID AND
+      HSE1.DBID (+) = HSE2.DBID AND
+      SS.INSTANCE_NUMBER = HSE2.INSTANCE_NUMBER AND
+      HSE1.INSTANCE_NUMBER (+) = HSE2.INSTANCE_NUMBER AND
+      SS.SNAP_ID = HSE2.SNAP_ID AND
+      SS.PREV_SNAP_ID IS NOT NULL AND
+      SS.SNAP_ID != SS.MIN_SNAP_ID AND
+      HSE1.SNAP_ID (+) = HSE2.SNAP_ID - 1 AND
+      HSE1.EVENT_NAME (+) = HSE2.EVENT_NAME AND
+      SS.PREV_SNAP_ID IS NOT NULL AND
+      (
+        ( HSE2.WAIT_CLASS != 'Idle' AND
+          HSE2.TIME_WAITED_MICRO >= 1000000 * BI.MIN_TIME_WAITED_S AND
+          ( BI.EXCLUDE_SYSTEM = ' ' OR
+            HSE2.WAIT_CLASS != 'System I/O'
+          ) AND
+          ( BI.EXCLUDE_ADMINISTRATIVE = ' ' OR
+            ( HSE2.WAIT_CLASS != 'Administrative' AND
+              HSE2.EVENT_NAME NOT IN ( 'ARCH wait on SENDREQ', 'LNS wait on SENDREQ' )
+            )
+          )
+        ) or
+        instr(bi.show_always_events,','||HSE2.EVENT_NAME||',')>0
+      )
+    UNION ALL
+    ( SELECT
+        SS.SNAP_ID,
+        SS.BEGIN_INTERVAL_TIME,
+        SS.END_INTERVAL_TIME,
+        SS.INSTANCE_NUMBER,
+        SS.INTERVAL_SECONDS,
+        'CPU' EVENT_NAME,
+        NULL TOTAL_WAITS,
+        NULL TOTAL_TIMEOUTS,
+        DECODE(SS.RESTART, 'NO', HSY2.VALUE - NVL(HSY1.VALUE, 0) ,
+          HSY2.VALUE) TIME_WAITED_MICRO,
+        BI.MIN_AVG_DIRECT_PATH_TIME_MS,
+        BI.CONSIDER_TIMEOUTS
+      FROM
+        BASIS_INFO BI,
+        SNAPSHOTS SS,
+        DBA_HIST_SYS_TIME_MODEL HSY1,
+        DBA_HIST_SYS_TIME_MODEL HSY2
+      WHERE
+        HSY1.DBID (+) = HSY2.DBID AND
+        HSY2.DBID = SS.DBID AND
+        HSY1.INSTANCE_NUMBER (+) = HSY2.INSTANCE_NUMBER AND
+        HSY2.INSTANCE_NUMBER = SS.INSTANCE_NUMBER AND
+        HSY2.SNAP_ID = SS.SNAP_ID AND
+        SS.PREV_SNAP_ID IS NOT NULL AND
+        SS.SNAP_ID != SS.MIN_SNAP_ID AND
+        HSY1.SNAP_ID (+) = HSY2.SNAP_ID - 1 AND
+        HSY1.STAT_NAME (+) = HSY2.STAT_NAME AND
+        HSY2.STAT_NAME = 'DB CPU'
+    )
+    UNION ALL
+    ( SELECT
+        SS.SNAP_ID,
+        SS.BEGIN_INTERVAL_TIME,
+        SS.END_INTERVAL_TIME,
+        SS.INSTANCE_NUMBER,
+        SS.INTERVAL_SECONDS,
+        'NETWORK' EVENT_NAME,
+        DECODE(SS.RESTART, 'NO', HSY2.VALUE -
+          NVL(HSY1.VALUE, 0), HSY2.VALUE) TOTAL_WAITS,
+        0 TOTAL_TIMEOUTS,
+          BI.RTT_MICRO * DECODE(SS.RESTART, 'NO', HSY2.VALUE - NVL(HSY1.VALUE, 0),
+          HSY2.VALUE) TIME_WAITED_MICRO,
+        BI.MIN_AVG_DIRECT_PATH_TIME_MS,
+        BI.CONSIDER_TIMEOUTS
+      FROM
+        BASIS_INFO BI,
+        SNAPSHOTS SS,
+        DBA_HIST_SYSSTAT HSY1,
+        DBA_HIST_SYSSTAT HSY2
+      WHERE
+        SS.DBID = HSY2.DBID AND
+        HSY1.DBID (+) = HSY2.DBID AND
+        SS.INSTANCE_NUMBER = HSY2.INSTANCE_NUMBER AND
+        HSY1.INSTANCE_NUMBER (+) = HSY2.INSTANCE_NUMBER AND
+        SS.SNAP_ID = HSY2.SNAP_ID AND
+        SS.PREV_SNAP_ID IS NOT NULL AND
+        SS.SNAP_ID != SS.MIN_SNAP_ID AND
+        HSY1.SNAP_ID (+) = HSY2.SNAP_ID - 1 AND
+        HSY1.STAT_NAME (+) = HSY2.STAT_NAME AND
+        SS.PREV_SNAP_ID IS NOT NULL AND
+        HSY2.STAT_NAME = 'user calls'
+    )
+  )
+),
+seg_stat_inst_time_agg as
+( select /*+ materialize */
+    begin_time,
+    instance_number,
+    obj#,
+    dataobj#,
+    lr, lr_ratio, lr#,
+    bbw, bbw_ratio, bbw#,
+    pr, pr_ratio, pr#,
+    prd, prd_ratio, prd#,
+    pwd, pwd_ratio, pwd#,
+    rlw, rlw_ratio, rlw#,
+    ts, ts_ratio, ts#,
+    gcbb, gcbb_ratio, gcbb#,
+    bc, bc_ratio, bc#
+  from
+  ( select
+      begin_time,
+      instance_number,
+      obj#,
+      dataobj#,
+      lr,
+      ratio_to_report(lr) over (partition by begin_time, instance_number) lr_ratio,
+      row_number() over (partition by begin_time, instance_number order by lr desc) lr#,
+      bbw,
+      ratio_to_report(bbw) over (partition by begin_time, instance_number) bbw_ratio,
+      row_number() over (partition by begin_time, instance_number order by bbw desc) bbw#,
+      pr,
+      ratio_to_report(pr) over (partition by begin_time, instance_number) pr_ratio,
+      row_number() over (partition by begin_time, instance_number order by pr desc) pr#,
+      prd,
+      ratio_to_report(prd) over (partition by begin_time, instance_number) prd_ratio,
+      row_number() over (partition by begin_time, instance_number order by prd desc) prd#,
+      pwd,
+      ratio_to_report(pwd) over (partition by begin_time, instance_number) pwd_ratio,
+      row_number() over (partition by begin_time, instance_number order by pwd desc) pwd#,
+      rlw,
+      ratio_to_report(rlw) over (partition by begin_time, instance_number) rlw_ratio,
+      row_number() over (partition by begin_time, instance_number order by rlw desc) rlw#,
+      ts,
+      ratio_to_report(ts) over (partition by begin_time, instance_number) ts_ratio,
+      row_number() over (partition by begin_time, instance_number order by ts desc) ts#,
+      gcbb,
+      ratio_to_report(gcbb) over (partition by begin_time, instance_number) gcbb_ratio,
+      row_number() over (partition by begin_time, instance_number order by gcbb desc) gcbb#,
+      bc,
+      ratio_to_report(bc) over (partition by begin_time, instance_number) bc_ratio,
+      row_number() over (partition by begin_time, instance_number order by bc desc) bc#,
+      min_object_percentage
+    from
+    ( select
+        to_char(ss.begin_interval_time, bi.aggregate_by) begin_time,
+        decode(bi.instance_number, -2, 0, hss.instance_number) instance_number,
+        hss.obj#,
+        hss.dataobj#,
+        sum(hss.logical_reads_delta) lr,
+        sum(hss.buffer_busy_waits_delta) bbw,
+        sum(hss.physical_reads_delta) pr,
+        sum(hss.physical_reads_direct_delta) prd,
+        sum(hss.physical_writes_direct_delta) pwd,
+        sum(hss.row_lock_waits_delta) rlw,
+        sum(hss.table_scans_delta) ts,
+        sum(hss.gc_buffer_busy_delta) gcbb,
+        sum(hss.db_block_changes_delta) bc,
+        min(bi.min_object_percentage) min_object_percentage
+      from
+        dba_hist_seg_stat hss,
+        snapshots ss,
+        basis_info bi
+      where
+        hss.dbid = ss.dbid and
+        hss.instance_number = ss.instance_number and
+        hss.snap_id = ss.snap_id
+      group by
+        to_char(ss.begin_interval_time, bi.aggregate_by),
+        decode(bi.instance_number, -2, 0, hss.instance_number),
+        hss.obj#,
+        hss.dataobj#
+    )
+  )
+  where
+    lr_ratio > min_object_percentage or
+    bbw_ratio > min_object_percentage or
+    pr_ratio > min_object_percentage or
+    pwd_ratio > min_object_percentage or
+    prd_ratio > min_object_percentage or
+    rlw_ratio > min_object_percentage or
+    ts_ratio > min_object_percentage or
+    gcbb_ratio > min_object_percentage or
+    bc_ratio > min_object_percentage
+),
+seg_stat_inst_time_agg_names as
+( select /*+ materialize */
+    begin_time,
+    instance_number,
+    nvl(sso.object_name,nvl(sso2.object_name,ss.obj#)) object_name,
+    lr, lr_ratio, lr#,
+    bbw, bbw_ratio, bbw#,
+    pr, pr_ratio, pr#,
+    prd, prd_ratio, prd#,
+    pwd, pwd_ratio, pwd#,
+    rlw, rlw_ratio, rlw#,
+    ts, ts_ratio, ts#,
+    gcbb, gcbb_ratio, gcbb#,
+    bc, bc_ratio, bc#
+  from
+    seg_stat_inst_time_agg ss,
+    dba_objects sso,
+    (
+      select
+        dhsso.obj#,
+        dhsso.dataobj#,
+        dhsso.object_name
+      from
+        dba_hist_seg_stat_obj dhsso,
+        v$database d
+      where
+        dhsso.dbid=d.dbid
+    ) sso2
+  where
+    ss.obj#=sso.object_id(+) and
+    ss.dataobj#=sso.data_object_id(+) and
+    ss.obj#=sso2.obj#(+) and
+    ss.dataobj#=sso2.dataobj#(+)
+),
+seg_stat_inst_time_agg_nam_evt as
+( select /*+ materialize */
+    begin_time,
+    instance_number,
+    event,
+    object_names
+  from
+  ( select
+      begin_time,
+      instance_number,
+      event,
+      decode(object_name,
+        null,'',
+        object_name
+        ||','||value
+        ||','||round(ratio*100)
+        ||'%')||
+      decode(lead(object_name,1) over (partition by begin_time, instance_number, event order by nr),
+        null,'',
+        ';'||lead(object_name,1) over (partition by begin_time, instance_number, event order by nr)
+        ||','||lead(value,1) over (partition by begin_time, instance_number, event order by nr)
+        ||','||round(lead(ratio,1) over (partition by begin_time, instance_number, event order by nr)*100)
+        ||'%')||
+      decode(lead(object_name,2) over (partition by begin_time, instance_number, event order by nr),
+        null,'',
+        ';'||lead(object_name,2) over (partition by begin_time, instance_number, event order by nr)
+        ||','||lead(value,2) over (partition by begin_time, instance_number, event order by nr)
+        ||','||round(lead(ratio,2) over (partition by begin_time, instance_number, event order by nr)*100)
+        ||'%')||
+      decode(lead(object_name,3) over (partition by begin_time, instance_number, event order by nr),
+        null,'',
+        ';'||lead(object_name,3) over (partition by begin_time, instance_number, event order by nr)
+        ||','||lead(value,3) over (partition by begin_time, instance_number, event order by nr)
+        ||','||round(lead(ratio,3) over (partition by begin_time, instance_number, event order by nr)*100)
+        ||'%')||
+      decode(lead(object_name,4) over (partition by begin_time, instance_number, event order by nr),
+        null,'',
+        ';'||lead(object_name,4) over (partition by begin_time, instance_number, event order by nr)
+        ||','||lead(value,4) over (partition by begin_time, instance_number, event order by nr)
+        ||','||round(lead(ratio,4) over (partition by begin_time, instance_number, event order by nr)*100)
+        ||'%')
+      object_names,
+      nr
+    from
+    ( select
+      e.begin_time,
+      e.instance_number,
+      decode(m.nr,
+        1,'CPU',
+        2,'buffer busy waits',
+        3,'read by other session',
+        4,'db file sequential read',
+        5,'direct path write',
+        6,'direct path read',
+        7,'enq: TX - row lock contention',
+        8,'db file scattered read',
+        9,'gc buffer busy release',
+       10,'gc buffer busy acquire',
+       11,'log file sync',
+       12,'cell single block physical read',
+       13,'cell multiblock physical read'
+      ) event,
+      decode(m.nr,
+        1,e.lr,
+        2,e.bbw,
+        3,e.bbw,
+        4,e.pr,
+        5,e.pwd,
+        6,e.prd,
+        7,e.rlw,
+        8,e.ts,
+        9,e.gcbb,
+       10,e.gcbb,
+       11,e.bc,
+       12,e.pr,
+       13,e.prd
+      ) value,
+      decode(m.nr,
+        1,e.lr_ratio,
+        2,e.bbw_ratio,
+        3,e.bbw_ratio,
+        4,e.pr_ratio,
+        5,e.pwd_ratio,
+        6,e.prd_ratio,
+        7,e.rlw_ratio,
+        8,e.ts_ratio,
+        9,e.gcbb_ratio,
+       10,e.gcbb_ratio,
+       11,e.bc_ratio,
+       12,e.pr_ratio,
+       13,e.prd_ratio
+      ) ratio,
+      decode(m.nr,
+        1,e.lr#,
+        2,e.bbw#,
+        3,e.bbw#,
+        4,e.pr#,
+        5,e.pwd#,
+        6,e.prd#,
+        7,e.rlw#,
+        8,e.ts#,
+        9,e.gcbb#,
+       10,e.gcbb#,
+       11,e.bc#,
+       12,e.pr#,
+       13,e.prd#
+      ) nr,
+      object_name
+    from
+      seg_stat_inst_time_agg_names e,
+      ( select rownum nr from v$parameter where rownum < 14 ) m,
+      basis_info bi
+    where
+      decode(m.nr,
+        1,e.lr_ratio,
+        2,e.bbw_ratio,
+        3,e.bbw_ratio,
+        4,e.pr_ratio,
+        5,e.pwd_ratio,
+        6,e.prd_ratio,
+        7,e.rlw_ratio,
+        8,e.ts_ratio,
+        9,e.gcbb_ratio,
+       10,e.gcbb_ratio,
+       11,e.bc_ratio,
+       12,e.pr_ratio,
+       13,e.prd_ratio
+      )  > bi.min_object_percentage
+    )
+  )
+  where nr=1
+)
+select
+  se.begin_time||' ->' date_time,
+  to_char(to_date(replace(replace(se.begin_time,'AM',''),'PM',''),se.aggregate_by),'yyyy-iw') week,
+  to_char(to_date(replace(replace(se.begin_time,'AM',''),'PM',''),se.aggregate_by),'Dy') day,
+  to_char(to_date(replace(replace(se.begin_time,'AM',''),'PM',''),se.aggregate_by),'yyyy-mm-dd') date_,
+  to_char(to_date(se.begin_time,se.aggregate_by),'hh24:mi:ss') time,
+  to_char(to_date(se.begin_time,se.aggregate_by),'hh24') hour,
+  se.event,
+  round(se.wait_time_ms/1000) waited_seconds,
+  round(se.wait_time_ms/60000) waited_minutes,
+  to_char(round(se.wait_time_ms/3600000,2)) waited_hours,
+  to_char(round(decode(se.interval_seconds,
+    0,-1,
+    se.wait_time_ms/se.interval_seconds/1000),2)) active_sessions,
+  se.waits,
+  se.avg_ms,
+  se.instance_number inst_id,
+  ss.object_names
+from
+( select
+    begin_time,
+    instance_number,
+    nvl(event_name,'OTHER') event,
+    decode(event_name,
+      null, max(wait_time_ms_all)-sum(wait_time_ms),
+      sum(wait_time_ms)) wait_time_ms,
+    decode(event_name,
+      null, null,
+      sum(total_waits)) waits,
+    decode(event_name,
+      null, null,
+      round(sum(avg_ms),2)) avg_ms,
+    max(aggregate_by) aggregate_by,
+    max(interval_seconds) interval_seconds
+  from
+  ( select
+      begin_time,
+      instance_number,
+      event_name,
+      wait_time_ms,
+      sum(wait_time_ms) over (partition by begin_time, instance_number) wait_time_ms_all,
+      interval_seconds,
+      decode(total_waits, 0, 0, wait_time_ms / total_waits) avg_ms,
+      total_waits,
+      min_event_percentage,
+      aggregate_by,
+      show_always_events
+    from
+    ( SELECT
+        BEGIN_TIME,
+        INSTANCE_NUMBER,
+        EVENT_NAME,
+        SUM(INTERVAL_SECONDS) INTERVAL_SECONDS,
+        SUM(WAIT_TIME_MS) WAIT_TIME_MS,
+        SUM(TOTAL_WAITS) TOTAL_WAITS,
+        max(min_event_percentage) min_event_percentage,
+        max(aggregate_by) aggregate_by,
+        max(show_always_events) show_always_events
+      FROM
+      ( SELECT
+          BEGIN_TIME,
+          INSTANCE_NUMBER,
+          MAX(INTERVAL_SECONDS) INTERVAL_SECONDS,
+          EVENT_NAME,
+          SUM(WAIT_TIME_MS) WAIT_TIME_MS,
+          SUM(TOTAL_WAITS) TOTAL_WAITS,
+          max(min_event_percentage) min_event_percentage,
+          max(aggregate_by) aggregate_by,
+          max(show_always_events) show_always_events
+        FROM
+        ( SELECT
+            TE.SNAP_ID,
+            MIN(TO_CHAR(BEGIN_INTERVAL_TIME, AGGREGATE_BY)) OVER (PARTITION BY TE.SNAP_ID) BEGIN_TIME,
+            DECODE(BI.INSTANCE_NUMBER, -2, 0, TE.INSTANCE_NUMBER) INSTANCE_NUMBER,
+            TE.INTERVAL_SECONDS,
+            TE.EVENT_NAME,
+            TE.TIME_WAITED_MICRO / 1000 WAIT_TIME_MS,
+            TE.TOTAL_WAITS,
+            BI.AGGREGATE_BY,
+            bi.min_event_percentage,
+            bi.show_always_events
+          FROM
+            BASIS_INFO BI,
+            TIMED_EVENTS_PER_SNAPSHOT TE
+          WHERE
+          ( BI.EXCLUDE_WEEKENDS = ' ' OR
+            TO_CHAR(TE.BEGIN_INTERVAL_TIME, 'D') NOT IN (7, 1) )
+        )
+        GROUP BY
+          BEGIN_TIME,
+          SNAP_ID,
+          INSTANCE_NUMBER,
+          EVENT_NAME
+      )
+      GROUP BY
+        BEGIN_TIME,
+        INSTANCE_NUMBER,
+        EVENT_NAME
+    )
+  )
+  where
+    wait_time_ms * 100 > wait_time_ms_all * min_event_percentage or
+    instr(show_always_events,','||event_name||',')>0  
+  group by
+    begin_time,
+    instance_number,
+    rollup(event_name)
+) se,
+  seg_stat_inst_time_agg_nam_evt ss
+where
+  se.instance_number=ss.instance_number(+) and
+  se.begin_time=ss.begin_time(+) and
+  se.event=ss.event(+)
+order by
+  date_time desc,
+  inst_id,
+  waited_seconds desc
+));

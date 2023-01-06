@@ -1,0 +1,321 @@
+select
+  category,
+  inst_id,
+  pct_inst,
+  event,
+  pct_db,
+  waited_sec waited_seconds,
+  round(waited_sec/60) waited_minutes,
+  to_char(round(waited_sec/3600,2)) waited_hours,
+  avg_ms,
+  waits,
+  timeouts
+from
+(
+  SELECT
+    '1 GV$SYSTEM_WAIT_CLASS' category,
+    decode(d.inst_id,null,' ALL',to_char(d.inst_id)) inst_id,
+    ROUND(RATIO_TO_REPORT(sum(d.TIME_WAITED_MICRO)) OVER (partition by d.inst_id) * 200) pct_inst,
+    nvl(d.wait_class,decode(d.inst_id,null,
+  '*** Total DB (since startup '||min(to_char(i.startup_time,'yyyy-mm-dd hh24:mi:ss'))||
+  ') *** ',
+  '*** Total Instance '
+  ||d.inst_id
+  ||' (startup '||min(to_char(i.startup_time,'yyyy-mm-dd hh24:mi:ss'))||
+  ') ***')) event,
+    ROUND(RATIO_TO_REPORT(sum(d.TIME_WAITED_MICRO)) OVER () * 400 ) pct_DB,
+    round(sum(d.TIME_WAITED_MICRO)/1000000) WAITED_SEC,
+    null avg_ms,
+    null waits,
+    null timeouts
+  FROM
+  (
+    select inst_id, wait_class, time_waited*10000 TIME_WAITED_micro
+    from gv$system_wait_class
+    where WAIT_CLASS!='Idle' and
+    ( decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') = ' ' OR 
+      WAIT_CLASS != 'System I/O') AND
+    ( decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') = ' ' OR 
+      WAIT_CLASS != 'Administrative'
+    )  
+    UNION
+    ( SELECT inst_id, 'CPU' wait_class, VALUE TIME_WAITED_micro
+      FROM gV$sys_time_model
+      WHERE stat_name = 'DB CPU' )
+    UNION
+    ( SELECT inst_id, 'NETWORK(RTT)' wait_class, VALUE*
+        to_number(nvl('400',400)) TIME_WAITED_micro
+      FROM gV$SYSSTAT
+      WHERE name = 'user calls' )
+  ) d,
+    gv$instance i
+  where
+    i.inst_id=d.inst_id
+  group by
+    cube(d.inst_id, d.wait_class)
+  union 
+  ( SELECT
+    '2 GV$SYSTEM_EVENT' category,
+    inst_id,
+    round(sum(pct_inst)) pct_inst,
+    decode(sign(to_number(nvl('1',1))-pct_inst),1,'OTHER',event) event,
+    round(sum(pct_DB)) pct_DB,
+    sum(WAITED_SEC) WAITED_SEC,
+    to_number(decode(
+      decode(sign(to_number(nvl('1',1))-pct_inst),1,'OTHER',event),
+      'OTHER',null,
+      sum(AVG_MS))) avg_ms,
+    sum(waits) waits,
+    sum(timeouts) timeouts
+  from
+  (
+  SELECT
+    decode(d.inst_id,null,' ALL',to_char(d.inst_id)) inst_id,
+    nvl(d.event,decode(d.inst_id,null,
+  '*** Total DB (since startup '||min(to_char(i.startup_time,'yyyy-mm-dd hh24:mi:ss'))||
+  ') *** ',
+  '*** Total Instance '
+  ||d.inst_id
+  ||' (startup '||min(to_char(i.startup_time,'yyyy-mm-dd hh24:mi:ss'))||
+  ') ***')) event,
+    round(sum(d.TIME_WAITED_MICRO)/1000000) WAITED_SEC,
+    RATIO_TO_REPORT(sum(d.TIME_WAITED_MICRO)) OVER () * 400  pct_DB,
+    RATIO_TO_REPORT(sum(d.TIME_WAITED_MICRO)) OVER (partition by d.inst_id) * 200 pct_inst,
+    decode(d.event,null,null,ROUND(sum(d.TIME_WAITED_micro)/sum(d.WAITS_adapted)/1000)) AVG_MS,
+    decode(d.event,null,null,sum(d.WAITS_adapted)) waits,
+    decode(d.event,null,null,sum(d.TIMEOUTS)) timeouts
+  FROM
+  (
+    SELECT
+      inst_id,
+      EVENT,
+      total_waits waits,
+      total_timeouts timeouts,
+      decode(substr(upper('Y'),1,1),
+        'N',total_waits,greatest(total_waits-total_timeouts,1)) waits_adapted,
+      GREATEST(DECODE(SUBSTR(EVENT, 1, 11), 
+        'direct path', to_number(nvl('1','1')) * 1000 * TOTAL_WAITS, 
+        0),
+        TIME_WAITED_MICRO) time_waited_micro
+    FROM gV$SYSTEM_EVENT
+    WHERE
+      WAIT_CLASS != 'Idle' and
+     ( decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') = ' ' OR 
+       WAIT_CLASS != 'System I/O') AND
+     ( decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') = ' ' OR 
+       ( WAIT_CLASS != 'Administrative' AND EVENT NOT IN ( 'ARCH wait on SENDREQ', 'LNS wait on SENDREQ' )))
+    UNION
+    ( SELECT inst_id, 'CPU' EVENT, NULL,NULL,NULL,  VALUE TIME_WAITED_micro
+      FROM gV$sys_time_model
+      WHERE stat_name = 'DB CPU' )
+    UNION
+    ( SELECT inst_id, 'NETWORK(RTT)' EVENT, VALUE, NULL, VALUE, VALUE*
+    to_number(nvl('400',400)) TIME_WAITED_micro
+      FROM gV$SYSSTAT
+      WHERE name='user calls' )
+  ) d,
+  gv$instance i
+  where
+    i.inst_id=d.inst_id
+  group by
+    cube(d.inst_id, d.event)
+  )
+  group by
+    inst_id,
+    decode(sign(to_number(nvl('1',1))-pct_inst),1,'OTHER',event)
+  ) union (
+  select
+    '3 DBA_HIST_SYSTEM_EVENT' category,
+    instance_number inst_id,
+    round(sum(pct_inst)) pct_inst,
+    decode(sign(to_number(nvl('1',1))-pct_inst),1,'OTHER',event_name) event,
+    round(sum(pct_db)) pct_db,
+    sum(time_sec) waited_sec,
+    sum(decode(sign(to_number(nvl('1',1))-pct_inst),1,0,avgms)) avg_ms,
+    sum(total_waits) waits,
+    sum(total_timeouts) timeouts
+  from
+  (
+    select
+      rpad(decode(instance_number,null,' ALL',to_char(instance_number)),8) instance_number,
+        nvl(event_name,decode(instance_number,null,
+  '*** Total DB ('
+    ||to_char(min(intervall_timestamp_low),'yyyy-mm-dd hh24:mi:ss')
+    ||' - '
+    ||to_char(max(intervall_timestamp_high),'yyyy-mm-dd hh24:mi:ss')
+    ||') ***',
+  '*** Total Instance '
+    ||instance_number
+    ||' ('
+    ||to_char(min(intervall_timestamp_low),'yyyy-mm-dd hh24:mi:ss')
+    ||' - '
+    ||to_char(max(intervall_timestamp_high),'yyyy-mm-dd hh24:mi:ss')
+    ||') ***')) event_name,
+      min(begin_interval_time) begin_interval_time,
+      max(end_interval_time) end_interval_time,
+      decode(event_name,null,null,sum(total_waits)) total_waits,
+      decode(event_name,null,null,sum(total_timeouts)) total_timeouts,
+      round(GREATEST(DECODE(SUBSTR(EVENT_NAME, 1, 11), 
+        'direct path', to_number(nvl('1','1')) * 1000 * sum(TOTAL_WAITS), 
+        0),
+        sum(TIME_WAITED_MICRO))/1000000) time_sec,
+      decode(event_name,null,null,decode(sum(total_waits),
+        0,0,
+        round(sum(time_waited_micro)/decode(substr(upper(
+  'Y'),1,1),
+             'N',sum(total_waits),
+             greatest(sum(total_waits)-sum(total_timeouts),1))/1000,2))) avgms,
+      RATIO_TO_REPORT(sum(TIME_WAITED_MICRO)) OVER () * 400  pct_DB,
+      RATIO_TO_REPORT(sum(TIME_WAITED_MICRO)) OVER (partition by instance_number) * 200 pct_inst
+    from
+    (
+      select
+        e.instance_number as instance_number,
+        e.snap_id,
+        event_name,
+        begin_interval_time,
+        end_interval_time,
+        decode(startup_time,
+          lag(startup_time) over (partition by e.instance_number, event_name order by e.snap_id),
+            total_waits-nvl(lag(total_waits) over (partition by e.instance_number, event_name order by e.snap_id),0),
+          total_waits) total_waits,
+        decode(startup_time,
+          lag(startup_time) over (partition by e.instance_number, event_name order by e.snap_id),
+            total_timeouts-nvl(lag(total_timeouts) over (partition by e.instance_number, event_name order by e.snap_id),0),
+          total_timeouts) total_timeouts,
+        decode(startup_time,
+          lag(startup_time) over (partition by e.instance_number, event_name order by e.snap_id),
+            time_waited_micro-nvl(lag(time_waited_micro) over (partition by e.instance_number, event_name
+              order by e.snap_id),0),
+          time_waited_micro) time_waited_micro,
+        s.intervall_timestamp intervall_timestamp_high,
+        lag(s.intervall_timestamp) over (partition by e.instance_number order by e.snap_id) intervall_timestamp_low
+        from
+        (
+          select
+            instance_number,
+            snap_id,
+            event_name,
+            total_waits,
+            total_timeouts,
+            time_waited_micro
+          from
+            dba_hist_system_event
+          where
+            wait_class!='Idle' and
+           ( decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') = ' ' OR 
+             WAIT_CLASS != 'System I/O') AND
+           ( decode(upper(substr('Y',1,1)),'N',' ',' ',' ','X') = ' ' OR 
+             ( WAIT_CLASS != 'Administrative' AND EVENT_NAME NOT IN ( 'ARCH wait on SENDREQ', 'LNS wait on SENDREQ' )))
+          union all
+          ( select
+              instance_number,
+              snap_id as snap_id,
+              'CPU' event,
+              null total_waits,
+              null total_timeouts,
+              value time_waited_micro
+            from
+              dba_hist_sys_time_model
+            where
+              stat_name = 'DB CPU'
+          ) 
+          union all
+          ( select
+              instance_number,
+              snap_id as snap_id,
+              'NETWORK(RTT)' event,
+              value total_waits,
+              0 total_timeouts,
+              value*to_number(nvl('400',400)) time_waited_micro
+            from
+              dba_hist_sysstat
+            where
+              stat_name = 'user calls'
+          )            
+        ) e,
+        (
+          select
+            hs.instance_number,
+            hs.snap_id,
+            hs.startup_time,
+            hs.begin_interval_time,
+            hs.end_interval_time,
+            minmax.intervall_timestamp
+          from
+            dba_hist_snapshot hs,
+            (
+              select
+                instance_number,
+                min(snap_id) min_snap_id,
+                max(snap_id) max_snap_id,
+                max(end_interval_time) intervall_timestamp
+              from
+                dba_hist_snapshot
+              where
+                end_interval_time between
+                  to_timestamp(rpad('1980-01-01 00:00',
+                    19,':00'),'yyyy-mm-dd hh24:mi:ss') and
+                  to_timestamp(rpad('9999-12-31 00:00',
+                    19,':00'),'yyyy-mm-dd hh24:mi:ss')
+              group by
+                instance_number
+            ) minmax
+          where
+            hs.instance_number = minmax.instance_number and
+            hs.snap_id > minmax.min_snap_id and
+            hs.snap_id <= minmax.max_snap_id
+          union all
+          (
+            select
+              hs.instance_number,
+              hs.snap_id,
+              hs.startup_time,
+              null,
+              null,
+              minmax.intervall_timestamp
+            from
+              dba_hist_snapshot hs,
+              (
+                select
+                  instance_number,
+                  min(snap_id) min_snap_id,
+                  min(end_interval_time) intervall_timestamp
+                from
+                  dba_hist_snapshot
+                where
+                  end_interval_time between
+                    to_timestamp(rpad('1980-01-01 00:00',
+                      19,':00'),'yyyy-mm-dd hh24:mi:ss') and
+                    to_timestamp(rpad('9999-12-31 00:00',
+                      19,':00'),'yyyy-mm-dd hh24:mi:ss')
+                group by
+                  instance_number
+              ) minmax
+            where
+              hs.instance_number = minmax.instance_number and
+              hs.snap_id = minmax.min_snap_id
+          )
+        ) s
+        where
+          e.instance_number = s.instance_number and
+          e.snap_id = s.snap_id
+    )
+    where
+      begin_interval_time is not null
+    group by cube
+      (
+        instance_number,
+        event_name
+      )
+  )
+  group by
+    instance_number,
+    decode(sign(to_number(nvl('1',1))-pct_inst),1,'OTHER',event_name)
+  )
+)
+order by
+  inst_id,
+  category,
+  waited_sec desc;
+
