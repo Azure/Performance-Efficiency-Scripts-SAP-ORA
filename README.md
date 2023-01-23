@@ -35,6 +35,7 @@ Any use of third-party trademarks or logos are subject to those third-party's po
 ## How To
 
 What follows are some ready made scripts that can help when troubleshooting SAP on Oracle deployments. These scripts are made to be run by Cloud Architects, DBAs, escalation teams, or anyone that is responsible for troubleshooting SAP on Oracle performance issues. There are separate categories for the scripts. Please use the navigation links below:
+
 [General Issues](#general-issues)
 
 [IO Issues](#io-issues)
@@ -51,15 +52,15 @@ What follows are some ready made scripts that can help when troubleshooting SAP 
 
 [Configuration Patch History](3_Configuration_Patches_History.txt)
 
-[DB Time History](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/4_DB%20Time%20History.txt)
+[DB Time History](4_DB Time History.txt)
 
-[CPU Time History](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/6_CPU%20Time%20History.txt)
+[CPU Time History](6_CPU Time History.txt)
 
-[DB key figures history](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/7_DB%20Key%20Figures%20History.txt)
+[DB key figures history](7_DB Key Figures History.txt)
 
-[Top segments per segment statistics](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/8_TopSegmentsPerSegmentStatistics.txt)
+[Top segments per segment statistics](8_TopSegmentsPerSegmentStatistics.txt)
 
-[SQL Statements that consumed the most DB server time](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/9_SQL_TopSQLInAWRWithSearchOptionsAndHistograms.txt)
+[SQL Statements that consumed the most DB server time](9_SQL_TopSQLInAWRWithSearchOptionsAndHistograms.txt)
 
 ## IO Issues
 
