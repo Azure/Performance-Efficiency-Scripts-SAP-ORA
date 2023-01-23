@@ -64,10 +64,112 @@ What follows are some ready made scripts that can help when troubleshooting SAP 
 
 ## IO Issues
 
+There are two reasons for more absolute IO time per hour: more IO operations or a higher average time per IO operations. It is crucial to figure out which is responsible for an absolute IO operation time increase. In the event of higher IO operations, it is imperative to focus on the statements responsible for the higher number of IOs. In the latter case, the root cause is likely outside of the database, if the database does not show higher IO activity than at times that do not have issues. Use the DB time history to try and narrow this down.
+
+[IO activity per AWR interval](11_IO_IOActivityPerAWRInterval.txt)
+
+[Histogram db file sequential read](12_Histogram_db_file_sequential_read.txt)
+
+[Histogram db file scattered read](13_Histogram_db_file_scattered_read.txt)
+
+[Histogram log file sync](14_Histogram_log_file_sync.txt)
+
+[Histogram log file parallel write](15_Histogram_log_file_parallel_write.txt)
+
+[Histogram disk file operations I/O](16_Histogram_Disk_file_operations_IO.txt)
+
+[LFS Analyzer](17_LFS_Analyzer.txt)
+
 ## Enqueue Issues
+
+se these statements if the absolute enqueue time is significantly higher than usual at the time of the performance issue. To reduce enqueue time, either the risk of contention needs to be reduces, by non-DB tuning or the root blocker activity of the block waiters needs to be tuned. In the former situation, buffering number ranges (table NRIV), or using less parallelism could help to resolve the issue. In the latter case, it depends on where the root blocker is mainly active:
+
+DB: collect and tune that DB activity
+
+ABAP CPU: check the ABAP for tuning potential
+
+RFC: check with /SDF/(S)MON if the RFCs are active mainly on the database or in ABAP CPU and tune accordingly.
+
+[Blocking locks in history](18_Locks_BlockingLocksInHistory_11g.txt)
+
+[Root Blocker Activity](19_Lock_Analyzer_Root_Blocker_Activity.txt)
+
+[Blocked Statements](20_Lock_Analyzer_Blocked_Statements.txt)
+
+[Blocked Rows](21_Lock_Analyzer_Blocked_Rows.txt)
 
 ## SQL Statement Issues
 
+If a can technically be tuned and to what degree it can be tuned depends on a lot of factors. Some guiding questions include:
+
+Is the effort to select the rows plausible or too high?
+
+Where is the time lost in the access path (table or index)?
+
+Does Oracle provide the chance to do it better (index creation)?
+
+[SQL ID data collector (statement tuning)](22_SQL_SQL_ID_DataCollector_11g.txt)
+
+[SQL ID cache statements](23_SQL_ID_CacheSnapshots.txt)
+
 ## Long Running Background Job Issues
 
+A very often upcoming performance problem is that a Background Job shows a high runtime so it should be evaluated why. For systematic tuning, it is crucial to know where most of the time is lost, otherwise a component be tuned having just minor contribution to the overall runtime. The job time includes: Non-DB time (measured by SAP), DB time (measured by SAP), communication/network time between SAP and DB and the DB server time. The DB server time includes the SQL statement(s) run time Collect the following components:
+
+***Communication/Network Time between SAP and DB, Non-DB time:***
+Can be calculated as difference when the other times are known.
+
+***Job Time:***
+SM37 **or**
+ST03 -> Transaction Profile -> Background -> Total Response Time **or**
+SDF/(S)MON samples of background job * time between samples **or**
+STAD -> Response Time
+
+***DB Time:***
+ST03 –> Transaction profile -> Background -> Total DB Time **or**
+/SDF/(S)MON samples of job showing DB activity (columns Current Action, Table) * time between samples **or**
+STAD -> DB Time
+
+***DB Server Time:***
+You will need the time-frame of the job run (SM37) and the DB session that served the job. THere is exactly once session which can be found as follows (this will only work if the SAP server was not restarted since the job run. If there was a SINGLE restart the dev_w*.old trace file can be evaluated exactly in the same way via transaction AL11).
+
+This script is based on a 10-second active history session history samples, therefore, not all SQL statements executed by the job are shown. In any case, if a statement has a significant contributions to the DB server time, it will be sampled and be shown. Using the above information, run the following script:
+```sql
+    select nvl(sql_id,decode(grouping_id(sql_id),1,'DB Server Time','No Statement')) statement, count(*)*10 seconds
+    from
+    
+      DBA_HIST_ACTIVE_SESS_HISTORY  
+    
+    where
+    
+      session_id=<session_id> and
+    
+      sample_time between
+    
+        to_timestamp('<Job Start Time YYYY-MM-DD HH24:MI:SS>','YYYY-MM-DD HH24:MI:SS') and 
+    
+        to_timestamp('<Job End Time YYYY-MM-DD HH24:MI:SS>','YYYY-MM-DD HH24:MI:SS') 
+    
+     group by rollup
+    
+       (sql_id)
+    
+     order by
+    
+       grouping_id(sql_id) desc,
+    
+       count(*) desc; 
+```
+
 ## Further Thoughts
+
+Depending on where the most time is being spent, further analysis and tuning is needed, but only in areas having the dominant or at least significant contribution. Consider the following areas:
+
+***Non-DB Time (measured from SAP) is dominating the job time***
+Check for what time was spent on the SAP layer and if this activity can be tuned. As an example, use /SDF/(S)MON for this analysis. If /SDF/(S)MON data is not available, set up /SDF/SMON according to [3007524](https://launchpad.support.sap.com/#/notes/3007524).
+
+***Communication/Network time between SAP and DB is dominating the job time***
+This can be due to either long running executions or a high volume of executions. In the former case, use tools such as ABAP Meter and niping as described in [3007524](https://launchpad.support.sap.com/#/notes/3007524). In the latter case, use the scripts for SQL statement issues.
+
+***SQL Statement time dominates the job time***
+Use the scripts for SQL statement issues.
