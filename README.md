@@ -50,10 +50,15 @@ What follows are some ready made scripts that can help when troubleshooting SAP 
 ## General Issues
 
 [Configuration Patch History](3_Configuration_Patches_History.txt)
+
 [DB Time History](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/4_DB%20Time%20History.txt)
+
 [CPU Time History](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/6_CPU%20Time%20History.txt)
+
 [DB key figures history](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/7_DB%20Key%20Figures%20History.txt)
+
 [Top segments per segment statistics](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/8_TopSegmentsPerSegmentStatistics.txt)
+
 [SQL Statements that consumed the most DB server time](https://github.com/Azure/Performance-Efficiency-Scripts-SAP-ORA/blob/main/9_SQL_TopSQLInAWRWithSearchOptionsAndHistograms.txt)
 
 ## IO Issues
