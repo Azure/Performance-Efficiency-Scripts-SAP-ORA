@@ -52,11 +52,11 @@ What follows are some ready made scripts that can help when troubleshooting SAP 
 
 [Configuration Patch History](3_Configuration_Patches_History.txt)
 
-[DB Time History](4_DB Time History.txt)
+[DB Time History](4_DB_Time_History.txt)
 
-[CPU Time History](6_CPU Time History.txt)
+[CPU Time History](6_CPU_Time_History.txt)
 
-[DB key figures history](7_DB Key Figures History.txt)
+[DB key figures history](7_DB_Key_Figures_History.txt)
 
 [Top segments per segment statistics](8_TopSegmentsPerSegmentStatistics.txt)
 
