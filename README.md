@@ -90,7 +90,7 @@ ABAP CPU: check the ABAP for tuning potential
 
 RFC: check with /SDF/(S)MON if the RFCs are active mainly on the database or in ABAP CPU and tune accordingly.
 
-[Blocking locks in history](18_Locks_BlockingLocksInHistory_11g.txt)
+[Blocking locks in history](18_Locks_BlockingLocksInHistory_11g+.txt)
 
 [Root Blocker Activity](19_Lock_Analyzer_Root_Blocker_Activity.txt)
 
@@ -108,9 +108,9 @@ Where is the time lost in the access path (table or index)?
 
 Does Oracle provide the chance to do it better (index creation)?
 
-[SQL ID data collector (statement tuning)](22_SQL_SQL_ID_DataCollector_11g.txt)
+[SQL ID data collector (statement tuning)](22_SQL_SQL_ID_DataCollector_11g+.txt)
 
-[SQL ID cache statements](23_SQL_ID_CacheSnapshots.txt)
+[SQL ID cache statements](23_SQL_ID_Cache_Snapshots.txt)
 
 ## Long Running Background Job Issues
 
