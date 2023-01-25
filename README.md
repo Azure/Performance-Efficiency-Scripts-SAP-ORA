@@ -46,7 +46,7 @@ What follows are some ready made scripts that can help when troubleshooting SAP 
 
 [Long Running Background Job Issue](#long-running-background-job-issues)
 
-[Further thoughts](#final-thoughts)
+[Further thoughts](#further-thoughts)
 
 ## General Issues
 
