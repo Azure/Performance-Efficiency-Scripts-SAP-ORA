@@ -52,11 +52,11 @@ What follows are some ready made scripts that can help when troubleshooting SAP 
 
 [Configuration Patch History](3_Configuration_Patches_History.txt)
 
-[DB Time History](4_DB_Time_History.txt)
+[DB Time History](4 DB Time History.txt)
 
-[CPU Time History](6_CPU_Time_History.txt)
+[CPU Time History](6 CPU Time History.txt)
 
-[DB key figures history](7_DB_Key_Figures_History.txt)
+[DB key figures history](7 DB Key Figures History.txt)
 
 [Top segments per segment statistics](8_TopSegmentsPerSegmentStatistics.txt)
 
@@ -68,17 +68,17 @@ There are two reasons for more absolute IO time per hour: more IO operations or 
 
 [IO activity per AWR interval](11_IO_IOActivityPerAWRInterval.txt)
 
-[Histogram db file sequential read](12_Histogram_db_file_sequential_read.txt)
+[Histogram db file sequential read](12_Histogram db file sequential read.txt)
 
-[Histogram db file scattered read](13_Histogram_db_file_scattered_read.txt)
+[Histogram db file scattered read](13_Histogram db file scattered read.txt)
 
-[Histogram log file sync](14_Histogram_log_file_sync.txt)
+[Histogram log file sync](14_Histogram log file sync.txt)
 
-[Histogram log file parallel write](15_Histogram_log_file_parallel_write.txt)
+[Histogram log file parallel write](15_Histogram log file parallel write.txt)
 
-[Histogram disk file operations I/O](16_Histogram_Disk_file_operations_IO.txt)
+[Histogram disk file operations I/O](16_Histogram Disk file operations IO.txt)
 
-[LFS Analyzer](17_LFS_Analyzer.txt)
+[LFS Analyzer](17_LFS Analyzer.txt)
 
 ## Enqueue Issues
 
@@ -92,11 +92,11 @@ RFC: check with /SDF/(S)MON if the RFCs are active mainly on the database or in 
 
 [Blocking locks in history](18_Locks_BlockingLocksInHistory_11g.txt)
 
-[Root Blocker Activity](19_Lock_Analyzer_Root_Blocker_Activity.txt)
+[Root Blocker Activity](19_Lock_Analyzer - Root Blocker Activity.txt)
 
-[Blocked Statements](20_Lock_Analyzer_Blocked_Statements.txt)
+[Blocked Statements](20_Lock Analyzer - Blocked Statements.txt)
 
-[Blocked Rows](21_Lock_Analyzer_Blocked_Rows.txt)
+[Blocked Rows](21_Lock Analyzer - Blocked Rows.txt)
 
 ## SQL Statement Issues
 
@@ -110,7 +110,7 @@ Does Oracle provide the chance to do it better (index creation)?
 
 [SQL ID data collector (statement tuning)](22_SQL_SQL_ID_DataCollector_11g.txt)
 
-[SQL ID cache statements](23_SQL_ID_CacheSnapshots.txt)
+[SQL ID cache statements](23_SQL ID - CacheSnapshots.txt)
 
 ## Long Running Background Job Issues
 
