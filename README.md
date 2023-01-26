@@ -70,7 +70,7 @@ There are two reasons for more absolute IO time per hour: more IO operations or 
 
 ## Enqueue Issues
 
-se these statements if the absolute enqueue time is significantly higher than usual at the time of the performance issue. To reduce enqueue time, either the risk of contention needs to be reduces, by non-DB tuning or the root blocker activity of the block waiters needs to be tuned. In the former situation, buffering number ranges (table NRIV), or using less parallelism could help to resolve the issue. In the latter case, it depends on where the root blocker is mainly active:
+Use these statements if the absolute enqueue time is significantly higher than usual at the time of the performance issue. To reduce enqueue time, either the risk of contention needs to be reduces, by non-DB tuning or the root blocker activity of the block waiters needs to be tuned. In the former situation, buffering number ranges (table NRIV), or using less parallelism could help to resolve the issue. In the latter case, it depends on where the root blocker is mainly active:
 
 DB: collect and tune that DB activity
 
